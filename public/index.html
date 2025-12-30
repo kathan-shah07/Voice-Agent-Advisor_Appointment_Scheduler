@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Agent: Advisor Appointment Scheduler - Phase 1</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            width: 100%;
+            max-width: 1400px;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .chat-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            border-right: 2px solid #e0e0e0;
+            min-width: 0; /* Allow flexbox to shrink */
+        }
+
+        .logs-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0; /* Allow flexbox to shrink */
+        }
+
+        .section-header {
+            padding: 12px 20px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e0e0e0;
+            font-weight: 600;
+            font-size: 14px;
+            color: #667eea;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f5f7fa;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message.assistant {
+            justify-content: flex-start;
+        }
+
+        .message-wrapper {
+            display: flex;
+            flex-direction: column;
+            max-width: 75%;
+        }
+
+        .message.user .message-wrapper {
+            align-items: flex-end;
+        }
+
+        .message.assistant .message-wrapper {
+            align-items: flex-start;
+        }
+
+        .message-header {
+            font-size: 11px;
+            font-weight: 600;
+            margin-bottom: 5px;
+            padding: 0 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .message.user .message-header {
+            color: #667eea;
+        }
+
+        .message.assistant .message-header {
+            color: #764ba2;
+        }
+
+        .message-content {
+            padding: 14px 18px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            line-height: 1.5;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+        }
+
+        .message-meta {
+            font-size: 11px;
+            color: #999;
+            margin-top: 6px;
+            padding: 0 8px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .message-meta .badge {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            background: #e9ecef;
+            color: #666;
+        }
+
+        .message-meta .badge.intent {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .message-meta .badge.state {
+            background: #cce5ff;
+            color: #004085;
+        }
+
+        .tool-calls {
+            margin-top: 10px;
+            padding: 10px 14px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 12px;
+            color: #666;
+            border-left: 3px solid #667eea;
+        }
+
+        .tool-calls strong {
+            color: #667eea;
+            display: block;
+            margin-bottom: 5px;
+        }
+
+        .tool-calls .tool-item {
+            margin: 4px 0;
+            padding-left: 12px;
+        }
+
+        .logs-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .log-entry {
+            padding: 8px 12px;
+            margin-bottom: 4px;
+            border-left: 3px solid transparent;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        .log-entry:hover {
+            background: #2d2d2d;
+        }
+
+        .log-entry.llm {
+            border-left-color: #4ec9b0;
+        }
+
+        .log-entry.keyword {
+            border-left-color: #dcdcaa;
+        }
+
+        .log-entry.system {
+            border-left-color: #569cd6;
+        }
+
+        .log-entry.error {
+            border-left-color: #f48771;
+        }
+
+        .log-entry.tool_call {
+            border-left-color: #ce9178;
+        }
+
+        .log-entry.rate_limit {
+            border-left-color: #c586c0;
+        }
+
+        .log-entry.fallback {
+            border-left-color: #d7ba7d;
+        }
+
+        .log-entry.intent {
+            border-left-color: #4fc1ff;
+        }
+
+        .log-timestamp {
+            color: #808080;
+            margin-right: 10px;
+        }
+
+        .log-type {
+            font-weight: 600;
+            margin-right: 10px;
+            text-transform: uppercase;
+        }
+
+        .log-entry.llm .log-type {
+            color: #4ec9b0;
+        }
+
+        .log-entry.keyword .log-type {
+            color: #dcdcaa;
+        }
+
+        .log-entry.system .log-type {
+            color: #569cd6;
+        }
+
+        .log-entry.error .log-type {
+            color: #f48771;
+        }
+
+        .log-entry.tool_call .log-type {
+            color: #ce9178;
+        }
+
+        .log-entry.rate_limit .log-type {
+            color: #c586c0;
+        }
+
+        .log-entry.fallback .log-type {
+            color: #d7ba7d;
+        }
+
+        .log-entry.intent .log-type {
+            color: #4fc1ff;
+        }
+
+        .log-message {
+            color: #d4d4d4;
+        }
+
+        .log-metadata {
+            margin-top: 4px;
+            padding-left: 20px;
+            color: #808080;
+            font-size: 11px;
+        }
+
+        .input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-container input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        .input-container input:focus {
+            border-color: #667eea;
+        }
+
+        .input-container button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .input-container button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .input-container button:active {
+            transform: translateY(0);
+        }
+
+        .input-container button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            padding: 10px 20px;
+            background: #f0f0f0;
+            font-size: 12px;
+            color: #666;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-info {
+            display: flex;
+            gap: 15px;
+        }
+
+        .status-info strong {
+            color: #667eea;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(102, 126, 234, 0.3);
+            border-radius: 50%;
+            border-top-color: #667eea;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .clear-logs {
+            padding: 8px 16px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            margin-left: 10px;
+        }
+
+        .clear-logs:hover {
+            background: #c82333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎙️ Advisor Appointment Scheduler</h1>
+            <p>Phase 1: Core Conversation Engine</p>
+        </div>
+        
+        <div class="main-content">
+            <!-- Chat Section -->
+            <div class="chat-section">
+                <div class="section-header">
+                    <span>💬 Chat</span>
+                </div>
+                <div class="chat-container" id="chatContainer">
+                    <div class="message assistant">
+                        <div class="message-wrapper">
+                            <div class="message-header">Assistant</div>
+                            <div class="message-content">
+                                Welcome! This is a text-based chat interface for testing the conversation engine.
+                                <br><br>
+                                Try saying: "I want to book an advisor call"
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="status" id="status">
+                    <div class="status-info">
+                        <span>State: <strong id="stateDisplay">-</strong></span>
+                        <span>Intent: <strong id="intentDisplay">-</strong></span>
+                        <span>Session: <strong id="sessionIdDisplay">-</strong></span>
+                    </div>
+                </div>
+
+                <div class="input-container">
+                    <input 
+                        type="text" 
+                        id="messageInput" 
+                        placeholder="Type your message here..."
+                        autocomplete="off"
+                    >
+                    <button id="sendButton" onclick="sendMessage()">Send</button>
+                </div>
+            </div>
+
+            <!-- Logs Section -->
+            <div class="logs-section">
+                <div class="section-header">
+                    <span>📋 Logs</span>
+                    <div>
+                        <span style="font-size: 12px; color: #666; margin-right: 10px;">Total: <strong id="logCount">0</strong></span>
+                        <button class="clear-logs" onclick="clearLogs()">Clear</button>
+                    </div>
+                </div>
+                <div class="logs-container" id="logsContainer">
+                    <div class="empty-state">No logs yet. Start a conversation to see backend operations.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let sessionId = null;
+        let allLogs = [];
+
+        const chatContainer = document.getElementById('chatContainer');
+        const logsContainer = document.getElementById('logsContainer');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const stateDisplay = document.getElementById('stateDisplay');
+        const intentDisplay = document.getElementById('intentDisplay');
+        const sessionIdDisplay = document.getElementById('sessionIdDisplay');
+        const logCount = document.getElementById('logCount');
+
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Auto-refresh logs every 2 seconds
+        setInterval(() => {
+            refreshLogs();
+        }, 2000);
+
+        async function sendMessage() {
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            // Add user message to chat
+            addMessage('user', message);
+            messageInput.value = '';
+            sendButton.disabled = true;
+            sendButton.innerHTML = '<div class="loading"></div>';
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        message,
+                        sessionId
+                    })
+                });
+
+                const data = await response.json();
+
+                if (!sessionId) {
+                    sessionId = data.sessionId;
+                    sessionIdDisplay.textContent = sessionId.substring(0, 8) + '...';
+                }
+
+                // Add logs from response
+                if (data.logs && data.logs.length > 0) {
+                    // Merge new logs, avoiding duplicates
+                    data.logs.forEach(newLog => {
+                        if (!allLogs.find(existingLog => 
+                            existingLog.timestamp === newLog.timestamp && 
+                            existingLog.message === newLog.message
+                        )) {
+                            allLogs.push(newLog);
+                        }
+                    });
+                    updateLogDisplay();
+                }
+                
+                // Also fetch all logs to get function calls
+                refreshLogs();
+
+                // Add assistant response
+                addMessage('assistant', data.response, {
+                    state: data.state,
+                    intent: data.intent,
+                    toolCalls: data.toolCalls
+                });
+
+                // Update status
+                stateDisplay.textContent = data.state || '-';
+                intentDisplay.textContent = data.intent || 'none';
+
+            } catch (error) {
+                console.error('Error:', error);
+                addMessage('assistant', 'Sorry, there was an error processing your message. Please try again.');
+            } finally {
+                sendButton.disabled = false;
+                sendButton.textContent = 'Send';
+            }
+        }
+
+        function addMessage(role, content, metadata = {}) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}`;
+            
+            const messageWrapper = document.createElement('div');
+            messageWrapper.className = 'message-wrapper';
+            
+            const header = document.createElement('div');
+            header.className = 'message-header';
+            header.textContent = role === 'user' ? 'You' : 'Assistant';
+            
+            const messageContent = document.createElement('div');
+            messageContent.className = 'message-content';
+            messageContent.textContent = content;
+            
+            messageWrapper.appendChild(header);
+            messageWrapper.appendChild(messageContent);
+
+            // Add metadata
+            if (metadata.state || metadata.intent || metadata.toolCalls) {
+                const metaDiv = document.createElement('div');
+                metaDiv.className = 'message-meta';
+                
+                if (metadata.intent) {
+                    const intentBadge = document.createElement('span');
+                    intentBadge.className = 'badge intent';
+                    intentBadge.textContent = `Intent: ${metadata.intent}`;
+                    metaDiv.appendChild(intentBadge);
+                }
+                
+                if (metadata.state) {
+                    const stateBadge = document.createElement('span');
+                    stateBadge.className = 'badge state';
+                    stateBadge.textContent = `State: ${metadata.state}`;
+                    metaDiv.appendChild(stateBadge);
+                }
+                
+                messageWrapper.appendChild(metaDiv);
+            }
+
+            // Add tool calls
+            if (metadata.toolCalls && metadata.toolCalls.length > 0) {
+                const toolCallsDiv = document.createElement('div');
+                toolCallsDiv.className = 'tool-calls';
+                toolCallsDiv.innerHTML = `<strong>🔧 Tool Calls:</strong>`;
+                metadata.toolCalls.forEach(tool => {
+                    const toolItem = document.createElement('div');
+                    toolItem.className = 'tool-item';
+                    toolItem.textContent = `• ${tool.function.name}`;
+                    toolCallsDiv.appendChild(toolItem);
+                });
+                messageWrapper.appendChild(toolCallsDiv);
+            }
+
+            messageDiv.appendChild(messageWrapper);
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function updateLogDisplay() {
+            logCount.textContent = allLogs.length;
+            
+            if (allLogs.length === 0) {
+                logsContainer.innerHTML = '<div class="empty-state">No logs yet. Start a conversation to see backend operations.</div>';
+                return;
+            }
+
+            logsContainer.innerHTML = '';
+            
+            // Show last 200 logs (more since we have more space)
+            const recentLogs = allLogs.slice(-200).reverse();
+            
+            recentLogs.forEach(log => {
+                const logEntry = document.createElement('div');
+                logEntry.className = `log-entry ${log.type}`;
+                
+                const timestamp = new Date(log.timestamp).toLocaleTimeString();
+                
+                // Format tool calls if present
+                let toolCallsHtml = '';
+                if (log.toolCalls && Array.isArray(log.toolCalls) && log.toolCalls.length > 0) {
+                    toolCallsHtml = `<div class="log-metadata" style="margin-top: 6px; padding: 8px; background: #2d2d2d; border-radius: 4px;">
+                        <strong style="color: #ce9178;">🔧 Function Calls:</strong><br>
+                        ${log.toolCalls.map(tc => `• ${tc}</div>`).join('<br>')}
+                    </div>`;
+                } else if (log.toolCalls && typeof log.toolCalls === 'string') {
+                    toolCallsHtml = `<div class="log-metadata" style="margin-top: 6px; padding: 8px; background: #2d2d2d; border-radius: 4px;">
+                        <strong style="color: #ce9178;">🔧 Function Calls:</strong> ${log.toolCalls}
+                    </div>`;
+                }
+                
+                logEntry.innerHTML = `
+                    <span class="log-timestamp">${timestamp}</span>
+                    <span class="log-type">${log.type}</span>
+                    <span class="log-message">${log.message}</span>
+                    ${log.intent || log.method || log.sessionId || log.bookingCode || log.toolCalls ? `
+                        <div class="log-metadata">
+                            ${log.intent ? `Intent: ${log.intent} | ` : ''}
+                            ${log.method ? `Method: ${log.method} | ` : ''}
+                            ${log.bookingCode ? `Code: ${log.bookingCode} | ` : ''}
+                            ${log.userInput ? `Input: "${log.userInput.substring(0, 50)}${log.userInput.length > 50 ? '...' : ''}"` : ''}
+                        </div>
+                    ` : ''}
+                    ${toolCallsHtml}
+                `;
+                
+                logsContainer.appendChild(logEntry);
+            });
+            
+            logsContainer.scrollTop = 0;
+        }
+
+        async function refreshLogs() {
+            try {
+                const response = await fetch('/api/logs?limit=200');
+                const data = await response.json();
+                
+                // Merge logs, avoiding duplicates based on timestamp and message
+                const newLogs = data.logs || [];
+                const existingTimestamps = new Set(allLogs.map(log => `${log.timestamp}-${log.message}`));
+                
+                newLogs.forEach(log => {
+                    const logKey = `${log.timestamp}-${log.message}`;
+                    if (!existingTimestamps.has(logKey)) {
+                        allLogs.push(log);
+                        existingTimestamps.add(logKey);
+                    }
+                });
+                
+                // Sort by timestamp
+                allLogs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+                
+                updateLogDisplay();
+            } catch (error) {
+                console.error('Error fetching logs:', error);
+            }
+        }
+
+        function clearLogs() {
+            if (confirm('Clear all logs?')) {
+                allLogs = [];
+                updateLogDisplay();
+            }
+        }
+
+        // Initial log refresh
+        refreshLogs();
+    </script>
+</body>
+</html>
