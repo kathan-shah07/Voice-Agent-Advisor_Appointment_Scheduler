@@ -1,0 +1,1055 @@
+Question 
+Voice Agent: Advisor Appointment Scheduler
+Milestone brief
+Create a voice agent that books a tentative advisor slot: collects topic + time preference, offers two slots, confirms, and then creates a calendar hold and notes entry + email draft via MCP. The caller gets a booking code and a secure link to finish details.
+Who this helpsUsers who want a human consult; PMs/Support running compliant pre-booking.
+What you must build
+Intents (5): book new, reschedule, cancel, “what to prepare,” check availability windows.
+
+
+Flow: greet → disclaimer (“informational, not investment advice”) → confirm topic (KYC/Onboarding, SIP/Mandates, Statements/Tax Docs, Withdrawals & Timelines, Account Changes/Nominee) → collect day/time preference → offer two slots (mock calendar) → on confirm:
+Generate Booking Code (e.g., NL-A742).
+MCP Calendar: create tentative hold “Advisor Q&A — {Topic} — {Code}”.
+MCP Notes/Doc: append {date, topic, slot, code} to “Advisor Pre-Bookings”.
+MCP Email Draft: prepare advisor email with details (approval-gated).
+Read the booking code + give a secure URL for contact details (outside the call).
+Key constraints
+No PII on the call (no phone/email/account numbers).
+State time zone (IST) and repeat date/time on confirmation.
+If no slots match → create waitlist hold + draft email.
+Refuse investment advice; provide educational links if asked.
+What to submit (deliverables)
+Working voice demo (live link) or ≤3-min call recording.
+Calendar hold screenshot (with title incl. booking code).
+Notes/Doc entry + Email draft screenshot/text.
+Script file (the short prompts/utterances you used).
+README: mock calendar JSON; how reschedule/cancel works.
+Approach
+
+1. Scope, assumptions, and artifacts
+Define these upfront so the team is aligned.
+Channel
+Inbound phone calls via a voice platform (Twilio/AWZ/Awav/agent platform of choice).
+Agent runs on top of an LLM with tools (MCP calendar, MCP notes/doc, MCP email).
+Time zone and locale
+All times are in IST and spoken back with explicit date + time: “Tuesday, 14 January at 4:30 PM IST.”
+Calendar MCP events are stored in ISO format with Asia/Kolkata timezone flag.
+MCP tools needed
+calendar_create_hold(title, start, end, code, is_waitlist)
+notes_append_prebooking({date, topic, slot, code})
+email_create_draft_advisor({topic, slot, code, waitlist})
+(Optionally) calendar_list_availability({day_range, topic}) if you want real availability instead of mock.
+Mock calendar behavior (for milestone)
+
+
+For now, implement a simple in-memory availability service that returns 2 candidate slots based on:
+
+
+Working days: Mon–Sat, 10:00–18:00 IST.
+
+
+Slot length: 30 minutes.
+
+
+Later you can swap this with real calendar via MCP.
+Non‑goals for this milestone
+
+
+No reminders, no advisor-confirmation workflow, no user notifications beyond read-out of code + URL.
+
+
+No collection of PII; contact details are captured only via the secure link.
+
+
+
+2. Intent and NLU design
+Define intents and example utterances, then wire them to dialog entry points.
+2.1 Intents (5 required)
+Book new appointment
+
+
+Example utterances:
+
+
+“I want to talk to an advisor.”
+
+
+“Book an advisor call.”
+
+
+“I need help with account changes.”
+
+
+Slots: topic, preferred_day, preferred_time_window.
+
+
+Reschedule appointment
+
+
+Utterances:
+
+
+“Reschedule my advisor slot.”
+
+
+“Change my appointment time.”
+
+
+Slots: booking_code, new_preferred_day, new_preferred_time_window.
+
+
+Cancel appointment
+
+
+Utterances:
+
+
+“Cancel my appointment.”
+
+
+“I can’t make it for that call.”
+
+
+Slots: booking_code.
+
+
+What to prepare
+
+
+Utterances:
+
+
+“What should I prepare for the meeting?”
+
+
+“What documents do I need?”
+
+
+Slots: optional topic.
+
+
+Check availability windows
+
+
+Utterances:
+
+
+“When can I speak to an advisor?”
+
+
+“What slots are open this week?”
+
+
+Slots: day_range (e.g., “today,” “this week,” “tomorrow evening”).
+
+
+You can implement NLU either via the LLM itself (“classify this utterance into one of these intents + extract slots”) or via a small intent classifier layer plus regex for date/time.
+2.2 Topic taxonomy (required)
+Fixed topic list, always confirmed explicitly:
+KYC/Onboarding
+
+
+SIP/Mandates
+
+
+Statements/Tax Docs
+
+
+Withdrawals & Timelines
+
+
+Account Changes/Nominee
+
+
+Agent must map free-text to one of these and confirm:
+“Just to confirm, your topic is Account Changes/Nominee, is that right?”
+
+3. Conversation flows (per intent)
+3.1 Shared building blocks
+Greeting
+
+
+“Welcome to [Brand] Advisor Desk. This is an automated assistant.”
+
+
+Mandatory disclaimer
+
+
+“This call is for general information only and not investment advice. For personalized recommendations, please speak to a registered advisor.”
+
+
+No-PII rule
+
+
+“Please do not share your phone number, email address, or account numbers on this call.”
+
+
+Use these near the top of every flow.
+
+3.2 Book new appointment flow
+High-level:
+Greet → disclaimer → no-PII reminder.
+
+
+Confirm topic.
+
+
+Collect day/time preference.
+
+
+Compute candidate slots (2) or detect no match.
+
+
+Confirm chosen slot with full date/time in IST.
+
+
+Generate booking code.
+
+
+Call MCP tools (calendar, notes, email draft).
+
+
+Read code + provide secure URL.
+
+
+Step-by-step dialog spec:
+Entry (intent: book new)
+
+
+Agent: Greeting + disclaimer + PII warning.
+
+
+Agent: “How can the advisor help you? You can choose from: KYC/Onboarding, SIP/Mandates, Statements and Tax Documents, Withdrawals and Timelines, or Account Changes and Nominee.”
+
+
+Topic selection
+
+
+User: “I want help changing my nominee.”
+
+
+NLU: map to Account Changes/Nominee.
+
+
+Agent: “You chose Account Changes/Nominee. Is that correct?”
+
+
+On yes → proceed. On no → re-prompt with list again.
+
+
+Day/time preference
+
+
+Agent: “Which day and time works best? You can say things like ‘tomorrow afternoon’ or ‘Monday after 4 PM’.”
+
+
+Parse to preferred_date (normalized) and time_window (e.g., afternoon = 14:00–18:00). Use date/time parser.
+
+
+If user gives very vague time (“sometime next week”), ask follow-up:
+
+
+“Is there a better time of day for you, like morning between 10 and 12, afternoon, or early evening?”
+
+
+Offer two slots
+
+
+Use mock availability service (or MCP calendar when ready) to generate two options within that window; if not enough, expand heuristically (same day, nearby window; then adjacent days).
+
+
+Agent:
+
+
+“I have two options on [date]:
+
+
+3:00 PM to 3:30 PM IST
+
+
+4:30 PM to 5:00 PM IST
+ Which do you prefer, 1 or 2?”
+
+
+If user accepts one slot
+
+
+Agent: “Great. Confirming your tentative advisor slot for [Topic] on [Day, Date] from [Start] to [End] IST. Is that correct?”
+
+
+On confirmation → proceed. If user changes mind → recompute slots.
+
+
+If no matching slots found
+
+
+After 1–2 attempts at adjusting times, fall back to waitlist:
+
+
+Agent: “There are no matching advisor slots in that window. I can place you on a waitlist and the team will contact you with options. Would you like to be added to the waitlist?”
+
+
+On yes:
+
+
+Choose a “generic window” (e.g., “this week”) and create a waitlist hold (see MCP section).
+
+
+Slot label can be “Waitlist – [Week of Date]”.
+
+
+Generate booking code
+
+
+Pattern: [A-Z]{2}-[A-Z0-9]{3} e.g., NL-A742.
+
+
+Code generation logic: random; ensure uniqueness by checking existing holds.
+
+
+MCP calls (non-PII)
+
+
+Calendar hold
+
+
+Title: Advisor Q&A — {Topic} — {Code}.
+
+
+Start/end: selected slot (or waitlist placeholder).
+
+
+Metadata: {tentative: true, source: "voice-prebooking"}.
+
+
+Notes / document append
+
+
+Resource: “Advisor Pre-Bookings” document or DB entry.
+
+
+Append line: {date_created, topic, slot_start, slot_end, code, is_waitlist}.
+
+
+Email draft
+
+
+To: advisor queue address (e.g., advisors@company.com), not sent automatically.
+
+
+Subject: Tentative Advisor Q&A — {Topic} — {Code}.
+
+
+Body stub (no PII):
+
+
+Topic
+
+
+Tentative slot (or waitlist)
+
+
+Booking code
+
+
+Note that user will complete details via secure link.
+
+
+Read code and give secure URL
+
+
+Agent:
+
+
+“Your booking code is {CODE}.” (Spell it slowly and offer to repeat.)
+
+
+“To share your contact details safely, please visit: advisors.example.com/complete and enter your booking code. Do not share your phone or email on this call.”
+
+
+Ask if user wants code repeated.
+
+
+Close
+
+
+“You have a tentative hold only. A member of the advisor team will confirm your appointment after reviewing your details. Thanks for calling.”
+
+
+
+3.3 Reschedule flow
+Greet + disclaimer + PII warning.
+
+
+Ask for booking code only:
+
+
+“To reschedule, I’ll use your booking code. Please share your booking code only. Do not share phone, email, or account numbers.”
+
+
+Capture booking_code and validate via MCP calendar/notes.
+
+
+Ask for new day/time preference; propose two new slots.
+
+
+On confirmation:
+
+
+Update calendar hold (change start/end, keep same Code).
+
+
+Append reschedule note to “Advisor Pre-Bookings”.
+
+
+Update email draft or create a new “Reschedule” draft referencing old + new slot.
+
+
+Read back new date/time in IST and repeat code.
+
+
+Remind: “Please update your contact details using the same secure link if needed.”
+
+
+
+3.4 Cancel flow
+Greet + disclaimer + PII warning.
+
+
+Ask for booking code only.
+
+
+Lookup; if found:
+
+
+Cancel or mark status: cancelled on calendar event.
+
+
+Append cancellation note to “Advisor Pre-Bookings”.
+
+
+Create or update email draft to advisors marking cancellation.
+
+
+Agent: “Your tentative advisor appointment with code {CODE} is now cancelled.”
+
+
+If booking not found, handle gracefully:
+“I could not find a booking with that code. Please check the code from your previous call and try again.”
+
+
+
+3.5 “What to prepare” flow
+Pure FAQ, no tools required unless you want logging.
+Greet + disclaimer + PII reminder.
+
+
+Ask if topic-specific:
+
+
+“Is this for KYC/Onboarding, SIP/Mandates, Statements and Tax Documents, Withdrawals and Timelines, or Account Changes and Nominee?”
+
+
+For each topic, give 2–3 bullet guidelines, without asking for actual document IDs or numbers.
+
+
+If user asks, “Is this a good fund / should I invest?” → strict refusal:
+
+
+“This service cannot provide investment advice or product recommendations. For that, please speak to a registered investment advisor.”
+
+
+Optionally share educational, non-advisory links (e.g., SEBI investor education, generic mutual-fund basics).
+
+
+
+3.6 Check availability windows flow
+Greet + disclaimer + PII reminder.
+
+
+Ask: “Are you looking for slots today, tomorrow, or this week?”
+
+
+Use availability service to compute 2–4 sample windows in IST.
+
+
+Read them out:
+
+
+“Today I have: 11:00–11:30 AM IST, 3:00–3:30 PM IST.”
+
+
+Option: offer to directly book (handoff into “book new” flow) if user says “book the 3 PM one.”
+
+
+
+4. MCP integration details
+Implement thin wrappers around your MCP servers so dialog code remains clean.
+4.1 Calendar MCP
+Tool signature (conceptual):
+
+
+create_tentative_hold(title, start_iso, end_iso, code, waitlist=false)
+
+
+update_hold_time(code, new_start_iso, new_end_iso)
+
+
+cancel_hold(code)
+
+
+get_availability(day_range, time_window)
+
+
+Event example
+Title: Advisor Q&A — Account Changes/Nominee — NL-A742
+
+
+Description:
+
+
+“Tentative hold created via voice agent.”
+
+
+“Topic: Account Changes/Nominee.”
+
+
+“Booking code: NL-A742.”
+
+
+Start: 2025-01-14T11:00:00+05:30
+
+
+End: 2025-01-14T11:30:00+05:30
+
+
+Status: tentative or custom field approval_pending: true.
+
+
+4.2 Notes/doc MCP
+Backend: Google Docs, Notion, DB, or simple text file via MCP.
+
+
+Append structure (CSV-like or JSON line):
+
+
+2025-01-10T10:22:21+05:30 | Account Changes/Nominee | 2025-01-14 11:00–11:30 IST | NL-A742 | waitlist=false | created_by=voice_agent
+
+
+4.3 Email draft MCP
+Use an MCP server for Gmail/GSuite or any SMTP-backed email service.mcpmarket+1​
+
+
+Draft only (no send):
+
+
+To: advisors-prebooking@company.com
+
+
+Subject: Tentative Advisor Q&A — {Topic} — {Code}
+
+
+Body skeleton (kept generic; user PII is added later from portal):
+
+
+“Source: Voice pre-booking agent.”
+
+
+“Topic: {Topic}.”
+
+
+“Tentative slot: {Day, Date, Time (IST)} or Waitlist: {Week of…}.”
+
+
+“Booking code: {Code}.”
+
+
+“User will fill contact and account details via secure portal using the code.”
+
+
+
+5. Guardrails, testing, and delivery
+5.1 Guardrails
+No PII capture
+
+
+Add PII detector rules: if user says phone, email, or account number, agent must:
+
+
+Interrupt gently: “For your safety, please do not share phone numbers, email addresses, or account numbers on this call. Use the secure link with your booking code instead.”
+
+
+Ignore the PII in state.
+
+
+Investment advice refusal
+
+
+For “Should I buy/sell/hold …?” or product recommendations:
+
+
+Refuse + give educational site (e.g., regulator’s investor education pages).awaz+1​
+
+
+Time zone clarity
+
+
+Every time slot is repeated with “IST” and both date + time.
+
+
+On final confirmation, always repeat the full phrase once more.
+
+
+5.2 Test cases (minimal set)
+Create scripted tests for:
+Book new with clear preference → two slots → success, code issued.
+
+
+Book new with vague time → follow-up → success.
+
+
+Book new where availability service returns nothing → waitlist flow.
+
+
+User tries to give phone/email → agent refuses and keeps going.
+
+
+User asks “Which fund is best?” → refusal + educational links.
+
+
+Reschedule with valid code → slot moved.
+
+
+Reschedule with invalid code → graceful error.
+
+
+Cancel with valid code → status updated.
+
+
+“What to prepare” for each topic → topic-specific checklist.
+
+
+Check availability “today” / “this week” → returns plausible windows.
+
+
+5.3 Engineering tasks breakdown
+You can roughly split into:
+Dialog + NLU
+
+
+Implement finite-state or frame-based dialog manager with the above flows.
+
+
+Implement topic classification and date/time parsing for IST.
+
+
+Mock availability module
+
+
+Hard-coded working hours and simple logic to pick 2 slots.
+
+
+MCP integration
+
+
+Implement calendar, notes, and email MCP clients.
+
+
+Implement booking-code generation and uniqueness check.
+
+
+Guardrails
+
+
+PII regex/heuristic detector.
+
+
+Investment-advice classifier with canned response.
+
+
+QA and tooling
+
+
+Voice sandbox with call transcripts to iterate on prompts and clarify utterances.
+
+Recommended target stack
+For this milestone, a pragmatic stack that plays well with MCP and your n8n background:
+LLM + Voice
+OpenAI Realtime API for speech-in/speech-out, low-latency voice agents with function calling.platform.openai+1​
+Model: gpt-realtime (or equivalent) with tool-calling enabled.platform.openai​
+Telephony / Voice I/O
+Twilio Programmable Voice with media streams → Node/Express (or Python) backend → OpenAI Realtime WebSocket.twilio+1​
+Alternative: Asterisk/Bandwidth, but Twilio has best docs + examples for Realtime.bandwidth+1​
+MCP servers
+Calendar: Google Calendar MCP server (e.g., google-calendar-mcp or Gmail+Calendar MCP).lobehub+2​
+Email drafts: Gmail MCP server (same combined server or separate Gmail MCP).mcpservers+1​
+Notes / Doc:
+Simplest: custom MCP server that appends to a Google Doc / Notion / DB table.
+Or reuse a “Gmail & Google Calendar MCP” variant and add your own notes_append tool.github+1​
+Orchestration
+Thin backend: Node.js (Express or Fastify) or Python FastAPI service that:
+Terminates Twilio Webhook + Media Streams.
+Maintains WebSocket to Realtime API.
+Hosts MCP client configuration (LLM → MCP tools).
+You can still keep n8n for side workflows (logging, analytics, daily availability preload), but the core voice loop stays lean and low-latency.
+Storage
+Calendar events in Google Calendar via MCP.github+1​
+Notes “Advisor Pre-Bookings” as:
+A Google Sheet/Doc updated via MCP server, or
+A simple Postgres table behind your custom MCP server.
+Email drafts in Gmail via MCP (draft-only).lobehub+1​
+
+2. API designs (tool schemas)
+Treat these as MCP tool schemas + what the LLM sees.
+2.1 Calendar tools (MCP server: gmail-calendar)
+Example tools (adapt to your chosen server’s names):github+1​
+json
+{
+  "name": "event_create_tentative",
+  "description": "Create a tentative advisor appointment or waitlist hold in IST.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "summary": { "type": "string" },
+      "description": { "type": "string" },
+      "startDateTime": { "type": "string", "description": "ISO 8601 with timezone Asia/Kolkata" },
+      "endDateTime": { "type": "string" },
+      "bookingCode": { "type": "string" },
+      "isWaitlist": { "type": "boolean" }
+    },
+    "required": ["summary", "startDateTime", "endDateTime", "bookingCode", "isWaitlist"]
+  }
+}
+
+json
+{
+  "name": "event_update_time",
+  "description": "Reschedule an existing advisor hold using its booking code.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "bookingCode": { "type": "string" },
+      "newStartDateTime": { "type": "string" },
+      "newEndDateTime": { "type": "string" }
+    },
+    "required": ["bookingCode", "newStartDateTime", "newEndDateTime"]
+  }
+}
+
+json
+{
+  "name": "event_cancel",
+  "description": "Cancel a tentative advisor hold by booking code.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "bookingCode": { "type": "string" }
+    },
+    "required": ["bookingCode"]
+  }
+}
+
+json
+{
+  "name": "calendar_get_availability",
+  "description": "Get up to two free slots in IST that match a day and time window.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "preferredDate": { "type": "string", "description": "YYYY-MM-DD in IST" },
+      "timeWindow": { "type": "string", "enum": ["morning", "afternoon", "evening", "any"] },
+      "slotMinutes": { "type": "number", "default": 30 }
+    },
+    "required": ["preferredDate", "timeWindow"]
+  }
+}
+
+2.2 Notes / Doc tool
+json
+{
+  "name": "notes_append_prebooking",
+  "description": "Append a pre-booking line to the 'Advisor Pre-Bookings' document.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "createdAt": { "type": "string" },
+      "topic": { "type": "string" },
+      "slotStart": { "type": "string" },
+      "slotEnd": { "type": "string" },
+      "bookingCode": { "type": "string" },
+      "isWaitlist": { "type": "boolean" },
+      "action": { "type": "string", "enum": ["created", "rescheduled", "cancelled"] }
+    },
+    "required": ["createdAt", "topic", "slotStart", "slotEnd", "bookingCode", "isWaitlist", "action"]
+  }
+}
+
+2.3 Email draft tool (Gmail MCP)
+json
+{
+  "name": "email_create_advisor_draft",
+  "description": "Create or update an approval-gated email draft to the advisor desk.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "topic": { "type": "string" },
+      "slotStart": { "type": "string" },
+      "slotEnd": { "type": "string" },
+      "bookingCode": { "type": "string" },
+      "isWaitlist": { "type": "boolean" },
+      "action": { "type": "string", "enum": ["created", "rescheduled", "cancelled"] }
+    },
+    "required": ["topic", "bookingCode", "isWaitlist", "action"]
+  }
+}
+
+The Gmail/Calendar MCP servers already expose message_create, event_create, etc.; you can wrap them in these higher-level tools, or teach the model to call raw ones.mcpservers+2​
+
+3. Realtime session + function config
+For OpenAI Realtime, your backend will:
+Open a WebSocket session with:
+json
+{
+  "type": "session.update",
+  "session": {
+    "type": "realtime",
+    "model": "gpt-realtime",
+    "output_modalities": ["audio", "text"],
+    "audio": {
+      "input": {
+        "format": "pcm16",
+        "turn_detection": { "type": "semantic_vad", "create_response": true }
+      },
+      "output": { "format": "pcm16" }
+    },
+    "tools": [
+      { "type": "function", "name": "event_create_tentative", ... },
+      { "type": "function", "name": "event_update_time", ... },
+      { "type": "function", "name": "event_cancel", ... },
+      { "type": "function", "name": "calendar_get_availability", ... },
+      { "type": "function", "name": "notes_append_prebooking", ... },
+      { "type": "function", "name": "email_create_advisor_draft", ... }
+    ]
+  }
+}
+
+Bridge audio from Twilio Media Streams into input_audio_buffer.append, and stream back response.output_audio.delta to Twilio as RTP/PCM.datacamp+2​
+
+4. Prompt templates (system + key turns)
+4.1 System prompt (Realtime / LLM)
+Summarized to fit latency constraints but still explicit:
+You are a voice-only advisor scheduling assistant for [Brand].
+Core task:
+Handle 5 intents: book new, reschedule, cancel, “what to prepare”, check availability windows.
+Collect required details: topic, day/time preference, confirm final slot in IST, then call tools to create or update tentative holds, notes, and advisor email drafts.
+Topics (only these):
+KYC/Onboarding
+SIP/Mandates
+Statements/Tax Docs
+Withdrawals & Timelines
+Account Changes/Nominee
+Mandatory behavior:
+At start of every call:
+Greet.
+Say: “This call is for general information only and not investment advice.”
+Ask user not to share phone, email, or account numbers.
+Never ask for or store PII. If user says a phone, email, or account number, interrupt and warn them not to share it. Ignore this data.
+All times are IST. When confirming a slot, always say day, date, and time, plus “IST”. Example: “Tuesday, 14 January, 3:00 to 3:30 PM IST.”
+After a booking or reschedule, generate a booking code like “NL-A742” (two letters, dash, three letters or digits). Spell it clearly.
+After creating or changing a hold, always:
+Call the calendar tool to create/update/cancel the event.
+Call the notes tool to append a line to “Advisor Pre-Bookings”.
+Call the email draft tool to prepare an advisor email (never auto-send).
+If there are no slots matching user preferences after two attempts, switch to a waitlist flow:
+Create a waitlist hold (isWaitlist = true).
+Draft a waitlist email for the advisor team.
+Tell the user they are on a waitlist for that week.
+For “what to prepare”, provide only generic checklists per topic. Never ask for document IDs or account numbers.
+If user asks for investment advice or which fund/product to choose, refuse politely:
+“I’m not allowed to provide investment advice or recommendations.”
+Offer to book an advisor slot instead.
+Secure-URL behavior:
+After every successful booking or reschedule, say:
+“Your booking code is {CODE}. Please go to advisors.example.com/complete and enter this code to safely share your contact details. Do not share your phone or email on this call.”
+Style:
+Short, clear voice prompts.
+Confirm important details (topic, date/time, IST, booking code).
+One question at a time.
+Recover gracefully if ASR seems uncertain.
+4.2 “Book new” booking code + tools snippet (assistant reasoning)
+For the tool-calling behavior, you do not expose chain-of-thought, but your tool outputs should look like:
+Model internally decides code: NL-A742.
+Calls:
+json
+{
+  "tool": "calendar_get_availability",
+  "arguments": {
+    "preferredDate": "2025-01-14",
+    "timeWindow": "afternoon",
+    "slotMinutes": 30
+  }
+}
+
+→ picks one slot; then:
+json
+{
+  "tool": "event_create_tentative",
+  "arguments": {
+    "summary": "Advisor Q&A — Account Changes/Nominee — NL-A742",
+    "description": "Tentative hold created via voice agent for Account Changes/Nominee.",
+    "startDateTime": "2025-01-14T15:00:00+05:30",
+    "endDateTime": "2025-01-14T15:30:00+05:30",
+    "bookingCode": "NL-A742",
+    "isWaitlist": false
+  }
+}
+
+json
+{
+  "tool": "notes_append_prebooking",
+  "arguments": {
+    "createdAt": "2025-01-10T10:22:21+05:30",
+    "topic": "Account Changes/Nominee",
+    "slotStart": "2025-01-14T15:00:00+05:30",
+    "slotEnd": "2025-01-14T15:30:00+05:30",
+    "bookingCode": "NL-A742",
+    "isWaitlist": false,
+    "action": "created"
+  }
+}
+
+json
+{
+  "tool": "email_create_advisor_draft",
+  "arguments": {
+    "topic": "Account Changes/Nominee",
+    "slotStart": "2025-01-14T15:00:00+05:30",
+    "slotEnd": "2025-01-14T15:30:00+05:30",
+    "bookingCode": "NL-A742",
+    "isWaitlist": false,
+    "action": "created"
+  }
+}
+
+The voice reply to caller is then simply:
+“Your booking code is N L dash A seven four two. I’ll repeat that: NL-A742. Your tentative advisor slot for Account Changes/Nominee is on Tuesday, 14 January, from 3:00 to 3:30 PM IST. Please go to advisors.example.com/complete and enter your booking code to safely share your contact details. Do not share your phone or email on this call.”
+
+5. How this fits your workflow
+You can build MCP servers (Calendar, Gmail, Notes) as separate small Node services, or reuse existing open-source servers and add a custom Notes tool.github+3​
+n8n can still sit on the side for:
+Daily “availability compaction” into a JSON that the calendar MCP uses.
+Logs → Slack/Sheets.
+The Realtime agent + Twilio piece is where your STT/TTS slide content plugs in; OpenAI Realtime already handles streaming audio and VAD, so you mainly focus on prompt, tools, and backpressure handling.platform.openai+3​
+
+STEPs
+Building a chatbot which handles book, reschedule, cancel and availability. 
+Groq API / Claude API 
+Basic logic for all the scenarios. 
+Option 1 → Inbuilt checking logic 
+Option 2 → Groq → Calendar → Decision (Good way but delay will be there)
+Timezone handling.
+	Unit test
+
+MCP integrations 
+Enable APIs (Calendar, Sheet, Gmail)
+Create a Service account, download the json key, have that key in the project. 
+Update .env with location of that key
+Create a sheet and give service account email access. 
+Create a calendar and give service account email access. 
+Gmail → Nodemailer + Gmail SMTP (https://myaccount.google.com/apppasswords) 
+
+	Integration Testing → reschedule, available slots, cancel booking
+
+Speech to Text 
+Google STT/ ElevenLabs 
+Voice logger (Store all the inputs in txt file) 
+Response → Google TTS 
+
+Improve STT and TTS & Deploy → Streamlit 
+
+
+Architecture 
+
+Voice Agent: Advisor Appointment Scheduler - Architecture
+1. System Overview
+A voice-based appointment scheduling system that allows users to book, reschedule, and cancel advisor consultations via phone calls. The system uses Gemini AI for natural language understanding and conversation management, integrates with MCP servers for calendar/email/notes, and maintains strict no-PII guardrails.
+
+2. 🚀 Development Phases
+This project is structured into 4 incremental phases, allowing you to build, test, and validate each component before moving forward.
+Phase 1: Core Conversation Engine
+Goal: Build and test the AI conversation logic without telephony complexity.
+What You'll Build:
+✅ Gemini AI integration with function calling
+✅ All 5 intent handlers (book, reschedule, cancel, prepare, availability)
+✅ Topic taxonomy and slot filling
+✅ Dialog state machine
+✅ Mock availability service
+✅ Booking code generation
+✅ Guardrails (PII detection, investment advice refusal)
+
+Tech Stack:
+Node.js + Express/Fastify
+Groq AI
+In-memory session state
+Testing Interface: Simple web chat UI (text-based)
+Input: User types messages
+Output: AI responses (text)
+Debug: View function calls, state transitions
+Deliverable: CLI or web chat where you can test all conversation flows end-to-end.
+Example Test:
+User: "I want to book an advisor call"
+AI: "Welcome! This call is for general information only..."
+User: "I need help with nominee changes"
+AI: "You chose Account Changes/Nominee. Is that correct?"
+...
+AI: "Your booking code is NL-A742. [Mock calendar hold created]"
+
+
+Phase 2: MCP Integration
+Goal: Connect real data sources - calendar, notes, email.
+What You'll Add:
+✅ Google Calendar MCP server (tentative holds)
+✅ Custom Notes MCP server (Google Sheets append)
+✅ Gmail MCP server (draft creation)
+✅ Replace mock calendar with real availability checking
+Tech Stack:
+Add: @modelcontextprotocol/sdk
+Add: @modelcontextprotocol/server-google-calendar
+Add: @modelcontextprotocol/server-gmail
+Add: Google Cloud service account
+Testing:
+Same chat UI from Phase 1
+Verify actual calendar events created
+Check Google Sheet for logged entries
+View Gmail drafts
+Deliverable: Complete booking flow that creates real calendar events, logs to sheets, and drafts emails.
+Example Verification:
+1. Complete booking via chat
+2. Open Google Calendar → See "Advisor Q&A — Account Changes/Nominee — NL-A742"
+3. Open Google Sheet → See new row with booking details
+4. Open Gmail Drafts → See advisor notification draft
+
+
+Phase 3: Voice Integration
+Goal: Add speech-to-text, text-to-speech, and telephony.
+What You'll Add:
+✅ Google Speech-to-Text integration
+✅ Google Text-to-Speech integration
+✅ Jambonz telephony server (OPTIONAL)
+✅ WebSocket audio streaming
+✅ Audio buffer management
+Tech Stack:
+Add: @google-cloud/speech
+Add: @google-cloud/text-to-speech
+Add: Jambonz (Docker setup) (OPTIONAL)
+Add: WebSocket handler (ws package)
+Two Sub-Phases:
+Phase 3: Web Voice Testing
+Build web UI with microphone input
+Use browser Web Audio API
+Stream audio to backend → STT → Gemini → TTS → browser playback
+Test without real phone calls
+Testing:
+Phase 3: Click microphone, speak, hear AI response
+
+
