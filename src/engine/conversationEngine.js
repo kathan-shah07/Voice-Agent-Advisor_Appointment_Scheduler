@@ -2077,6 +2077,7 @@ export class ConversationEngine {
 
   /**
    * Handle check availability intent
+   * Uses MCP calendar tool to get real availability from calendar
    */
   async handleCheckAvailability(session, userInput) {
     const state = session.getState();
@@ -2100,11 +2101,11 @@ export class ConversationEngine {
     // Handle day range extraction and availability check
     if (state === DIALOG_STATES.GREETING || state === DIALOG_STATES.AVAILABILITY_CHECK) {
       // Extract day range from user input
-    const extractedSlots = await extractSlots(userInput, INTENTS.CHECK_AVAILABILITY);
-      let dayRange = extractedSlots.day_range;
+      const extractedSlots = await extractSlots(userInput, INTENTS.CHECK_AVAILABILITY);
+      let dayRange = extractedSlots.day_range || userInput || 'today';
       
       // If no day range, ask for it as per req.txt
-      if (!dayRange) {
+      if (!dayRange || dayRange.trim() === '') {
         const response = `Are you looking for slots today, tomorrow, or this week?`;
         session.transitionTo(DIALOG_STATES.AVAILABILITY_CHECK);
         session.addMessage('assistant', response);
@@ -2117,42 +2118,223 @@ export class ConversationEngine {
         };
       }
       
-      // Process day range
-      dayRange = dayRange || userInput || 'today';
-      const dateTimePref = parseDateTimePreference(dayRange);
-
-      // Get available slots
-    const availableSlots = getAvailableSlots(
-      dateTimePref.date || new Date(),
-      dateTimePref.timeWindow || 'any',
-      30,
-      Array.from(mockBookings.values())
-    );
-
-    if (availableSlots.length > 0) {
-        // Format slots as per req.txt: "Today I have: 11:00–11:30 AM IST, 3:00–3:30 PM IST."
-        const istStart = utcToZonedTime(availableSlots[0].start, 'Asia/Kolkata');
-        const today = utcToZonedTime(new Date(), 'Asia/Kolkata');
+      // Normalize day range input
+      const dayRangeLower = dayRange.toLowerCase().trim();
+      
+      // Determine dates to check based on day range
+      const datesToCheck = [];
+      const today = getCurrentIST();
+      const todayIST = utcToZonedTime(today, 'Asia/Kolkata');
+      
+      if (dayRangeLower.includes('today')) {
+        datesToCheck.push({ date: today, label: 'Today' });
+      } else if (dayRangeLower.includes('tomorrow')) {
         const tomorrow = addDays(today, 1);
+        datesToCheck.push({ date: tomorrow, label: 'Tomorrow' });
+      } else if (dayRangeLower.includes('this week') || dayRangeLower.includes('week')) {
+        // For "this week", check Monday through Friday of current week
+        const currentDay = getDay(todayIST);
+        // Find Monday of current week
+        const daysFromMonday = currentDay === 0 ? 6 : currentDay - 1; // Sunday = 0, so 6 days back
+        const monday = addDays(today, -daysFromMonday);
         
-        let dateLabel = 'Today';
-        if (format(istStart, 'yyyy-MM-dd') === format(tomorrow, 'yyyy-MM-dd')) {
-          dateLabel = 'Tomorrow';
-        } else if (format(istStart, 'yyyy-MM-dd') !== format(today, 'yyyy-MM-dd')) {
-          dateLabel = format(istStart, 'EEEE');
+        // Add all weekdays (Monday to Friday)
+        for (let i = 0; i < 5; i++) {
+          const weekday = addDays(monday, i);
+          const weekdayIST = utcToZonedTime(weekday, 'Asia/Kolkata');
+          const dayName = format(weekdayIST, 'EEEE');
+          datesToCheck.push({ date: weekday, label: dayName });
+        }
+      } else {
+        // Parse as specific date preference
+        const dateTimePref = parseDateTimePreference(dayRange);
+        if (dateTimePref.date) {
+          const dateIST = utcToZonedTime(dateTimePref.date, 'Asia/Kolkata');
+          const dayName = format(dateIST, 'EEEE');
+          datesToCheck.push({ date: dateTimePref.date, label: dayName });
+        } else {
+          // Fallback to today
+          datesToCheck.push({ date: today, label: 'Today' });
+        }
+      }
+      
+      // Collect available slots from MCP calendar or mock
+      const allAvailableSlots = [];
+      const mcpEnabled = process.env.ENABLE_MCP === 'true';
+      const useMCP = mcpEnabled && this.mcpInitialized && this.mcpClient && this.mcpClient.isAvailable();
+      
+      // Check availability for each date
+      for (const { date, label } of datesToCheck) {
+        const dateIST = utcToZonedTime(date, 'Asia/Kolkata');
+        const dateStr = format(dateIST, 'yyyy-MM-dd');
+        
+        // Try MCP calendar tool first
+        if (useMCP) {
+          try {
+            logger.log('mcp', `Checking availability via MCP for ${dateStr}`, { dateStr, label });
+            
+            const toolCallConfigs = [
+              {
+                name: 'calendar_get_availability',
+                params: {
+                  preferredDate: dateStr,
+                  timeWindow: 'any', // Check all time windows
+                  slotMinutes: 30
+                }
+              }
+            ];
+            
+            const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
+            const result = results[0];
+            
+            if (result && result.success && result.data) {
+              // Parse MCP free/busy response
+              // The response structure is: { calendars: { calendarId: { busy: [...] } } }
+              let busyPeriods = [];
+              
+              if (result.data.calendars) {
+                // Extract busy periods from all calendars
+                Object.values(result.data.calendars).forEach(calendarData => {
+                  if (calendarData.busy && Array.isArray(calendarData.busy)) {
+                    busyPeriods.push(...calendarData.busy.map(b => ({
+                      start: new Date(b.start),
+                      end: new Date(b.end)
+                    })));
+                  }
+                });
+              } else if (Array.isArray(result.data)) {
+                // Fallback: if it's already an array of slots
+                busyPeriods = result.data.map(slot => ({
+                  start: new Date(slot.start || slot.startTime),
+                  end: new Date(slot.end || slot.endTime)
+                }));
+              }
+              
+              // Calculate available slots from busy periods
+              // Working hours: 10:00-18:00 IST
+              const dateIST = utcToZonedTime(date, 'Asia/Kolkata');
+              const startOfDay = new Date(dateIST);
+              startOfDay.setHours(10, 0, 0, 0);
+              const endOfDay = new Date(dateIST);
+              endOfDay.setHours(18, 0, 0, 0);
+              
+              // Convert to UTC for comparison
+              const startTimeUTC = zonedTimeToUtc(startOfDay, 'Asia/Kolkata');
+              const endTimeUTC = zonedTimeToUtc(endOfDay, 'Asia/Kolkata');
+              
+              // Sort busy periods by start time
+              busyPeriods.sort((a, b) => a.start.getTime() - b.start.getTime());
+              
+              // Find available slots (gaps between busy periods)
+              const availableSlots = [];
+              let currentTime = startTimeUTC;
+              const slotDuration = 30 * 60 * 1000; // 30 minutes in milliseconds
+              
+              for (const busy of busyPeriods) {
+                // If there's a gap before this busy period, add available slots
+                while (currentTime < busy.start && currentTime + slotDuration <= endTimeUTC) {
+                  const slotEnd = new Date(currentTime.getTime() + slotDuration);
+                  if (slotEnd <= busy.start && slotEnd <= endTimeUTC) {
+                    availableSlots.push({
+                      start: new Date(currentTime),
+                      end: slotEnd,
+                      dateLabel: label
+                    });
+                  }
+                  currentTime = new Date(currentTime.getTime() + slotDuration);
+                  
+                  // Stop if we have enough slots
+                  if (availableSlots.length >= 4) break;
+                }
+                
+                // Move current time past the busy period
+                if (busy.end > currentTime) {
+                  currentTime = busy.end;
+                }
+                
+                if (availableSlots.length >= 4) break;
+              }
+              
+              // Add remaining slots after last busy period
+              while (currentTime < endTimeUTC && availableSlots.length < 4) {
+                const slotEnd = new Date(currentTime.getTime() + slotDuration);
+                if (slotEnd <= endTimeUTC) {
+                  availableSlots.push({
+                    start: new Date(currentTime),
+                    end: slotEnd,
+                    dateLabel: label
+                  });
+                }
+                currentTime = new Date(currentTime.getTime() + slotDuration);
+              }
+              
+              allAvailableSlots.push(...availableSlots);
+              logger.log('mcp', `MCP returned ${availableSlots.length} available slots for ${dateStr}`, { 
+                dateStr, 
+                slotsCount: availableSlots.length,
+                busyPeriodsCount: busyPeriods.length
+              });
+            }
+          } catch (error) {
+            logger.log('error', `MCP availability check failed for ${dateStr}, falling back to mock`, { 
+              error: error.message,
+              dateStr 
+            });
+            // Fall through to mock availability
+          }
         }
         
-        const slotTimes = availableSlots.map(slot => {
-          const istSlotStart = utcToZonedTime(slot.start, 'Asia/Kolkata');
-          const istSlotEnd = utcToZonedTime(slot.end, 'Asia/Kolkata');
-          return `${format(istSlotStart, 'h:mm a')}–${format(istSlotEnd, 'h:mm a')} IST`;
-        }).join(', ');
+        // Fallback to mock availability if MCP not available or failed
+        if (!useMCP || allAvailableSlots.length === 0) {
+          const dateTimePref = parseDateTimePreference(dayRange);
+          const mockSlots = await getAvailableSlots(
+            date,
+            dateTimePref.timeWindow || 'any',
+            30,
+            Array.from(mockBookings.values())
+          );
+          
+          allAvailableSlots.push(...mockSlots.map(slot => ({
+            ...slot,
+            dateLabel: label
+          })));
+        }
         
-        // As per req.txt: Read them out and optionally offer to directly book
-        const response = `${dateLabel} I have: ${slotTimes}.\n\nWould you like to book one of these? You can say "book slot 1" or "book the first one".`;
+        // Stop if we have enough slots (2-4 as per requirements)
+        if (allAvailableSlots.length >= 4) {
+          break;
+        }
+      }
+      
+      // Take up to 4 slots (as per req.txt: "2-4 sample windows")
+      const selectedSlots = allAvailableSlots.slice(0, 4);
+      
+      if (selectedSlots.length > 0) {
+        // Group slots by date label
+        const slotsByDate = {};
+        selectedSlots.forEach(slot => {
+          const label = slot.dateLabel || 'Today';
+          if (!slotsByDate[label]) {
+            slotsByDate[label] = [];
+          }
+          slotsByDate[label].push(slot);
+        });
+        
+        // Format response as per req.txt: "Today I have: 11:00–11:30 AM IST, 3:00–3:30 PM IST."
+        const dateResponses = Object.entries(slotsByDate).map(([dateLabel, slots]) => {
+          const slotTimes = slots.map(slot => {
+            const istSlotStart = utcToZonedTime(slot.start, 'Asia/Kolkata');
+            const istSlotEnd = utcToZonedTime(slot.end, 'Asia/Kolkata');
+            return `${format(istSlotStart, 'h:mm a')}–${format(istSlotEnd, 'h:mm a')} IST`;
+          }).join(', ');
+          
+          return `${dateLabel} I have: ${slotTimes}.`;
+        });
+        
+        const response = `${dateResponses.join('\n')}\n\nWould you like to book one of these? You can say "book slot 1" or "book the first one".`;
         
         // Store available slots for potential booking
-        session.updateSlots({ available_slots: availableSlots });
+        session.updateSlots({ available_slots: selectedSlots });
         session.addMessage('assistant', response);
         return {
           response,
@@ -2173,47 +2355,6 @@ export class ConversationEngine {
           toolCalls: []
         };
       }
-    }
-    
-    // Handle availability check state (when user provides day range)
-    if (state === DIALOG_STATES.AVAILABILITY_CHECK) {
-      const extractedSlots = await extractSlots(userInput, INTENTS.CHECK_AVAILABILITY);
-      const dayRange = extractedSlots.day_range || userInput || 'today';
-      const dateTimePref = parseDateTimePreference(dayRange);
-
-      const availableSlots = getAvailableSlots(
-        dateTimePref.date || new Date(),
-        dateTimePref.timeWindow || 'any',
-        30,
-        Array.from(mockBookings.values())
-      );
-
-      if (availableSlots.length > 0) {
-        const slotTexts = availableSlots.map((slot, index) => 
-          `${index + 1}. ${formatSlot(slot.start, slot.end)}`
-        ).join('\n');
-        
-      const response = `I have these available slots:\n${slotTexts}\n\nWould you like to book one of these?`;
-        session.updateSlots({ available_slots: availableSlots });
-      session.addMessage('assistant', response);
-      return {
-        response,
-        state: session.getState(),
-        intent: session.getIntent(),
-        slots: session.getSlots(),
-        toolCalls: []
-      };
-    } else {
-      const response = `I don't have any available slots in that time window. Would you like to check a different time?`;
-      session.addMessage('assistant', response);
-      return {
-        response,
-        state: session.getState(),
-        intent: session.getIntent(),
-        slots: session.getSlots(),
-        toolCalls: []
-      };
-    }
     }
     
     return {
