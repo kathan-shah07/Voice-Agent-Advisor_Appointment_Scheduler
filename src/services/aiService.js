@@ -475,3 +475,79 @@ IMPORTANT: Respond with ONLY a valid JSON object. Use null for missing values. E
   }
 }
 
+/**
+ * Use LLM to interpret ambiguous or out-of-scope date/time preferences
+ * @param {string} userInput - User's date/time input that may be ambiguous
+ * @returns {Promise<Object>} { date: Date|null, timeWindow: string|null, confidence: number, needsClarification: boolean }
+ */
+export async function interpretDateTimeWithLLM(userInput) {
+  // Skip API calls in test environment
+  if (IS_TEST_ENV) {
+    console.log(`⚠️  Test environment: Skipping LLM date/time interpretation.`);
+    return { date: null, timeWindow: null, confidence: 0, needsClarification: true };
+  }
+
+  const systemPrompt = `You are a date and time interpreter for an advisor appointment scheduling system.
+
+Your task is to interpret the user's date and time preference and extract:
+1. A specific date (or relative date like "tomorrow", "next Monday")
+2. A time window: "morning" (10 AM - 12 PM), "afternoon" (12 PM - 4 PM), "evening" (4 PM - 6 PM), or "any" (10 AM - 6 PM)
+
+IMPORTANT CONSTRAINTS:
+- Slots are only available Monday through Friday (weekdays only)
+- Working hours are 10:00 AM to 6:00 PM IST
+- If the user requests a weekend (Saturday or Sunday), you should detect this
+
+Respond with a JSON object in this exact format:
+{
+  "date": "ISO date string or relative date (e.g., 'tomorrow', 'next Monday', '2024-12-15')",
+  "timeWindow": "morning|afternoon|evening|any",
+  "isWeekend": true|false,
+  "requestedWeekend": true|false,
+  "confidence": 0.0-1.0,
+  "needsClarification": true|false,
+  "interpretation": "Brief explanation of what you understood"
+}
+
+If the input is too vague or ambiguous, set needsClarification to true and provide a helpful interpretation.
+If the user requests a weekend, set isWeekend and requestedWeekend to true.`;
+
+  const messages = [
+    { role: 'user', content: `Interpret this date/time preference: "${userInput}"` }
+  ];
+
+  try {
+    const response = await getAIResponse(systemPrompt, messages);
+    const content = response.content.trim();
+    
+    // Try to parse JSON from response
+    let jsonString = content;
+    jsonString = jsonString.replace(/```json\n?/g, '');
+    jsonString = jsonString.replace(/```\n?/g, '');
+    jsonString = jsonString.trim();
+    
+    const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          date: parsed.date || null,
+          timeWindow: parsed.timeWindow || null,
+          isWeekend: parsed.isWeekend || false,
+          requestedWeekend: parsed.requestedWeekend || false,
+          confidence: parsed.confidence || 0.5,
+          needsClarification: parsed.needsClarification || false,
+          interpretation: parsed.interpretation || ''
+        };
+      } catch (parseError) {
+        console.warn('Failed to parse LLM date/time interpretation:', parseError.message);
+      }
+    }
+    
+    return { date: null, timeWindow: null, confidence: 0, needsClarification: true };
+  } catch (error) {
+    console.error('LLM date/time interpretation error:', error);
+    return { date: null, timeWindow: null, confidence: 0, needsClarification: true };
+  }
+}
+

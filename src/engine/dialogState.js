@@ -14,6 +14,7 @@ export const DIALOG_STATES = {
   TIME_PREFERENCE: 'time_preference',
   SLOT_OFFER: 'slot_offer',
   SLOT_CONFIRMATION: 'slot_confirmation',
+  WAITLIST_CONFIRMATION: 'waitlist_confirmation',
   BOOKING_CODE: 'booking_code',
   RESCHEDULE_CODE_INPUT: 'reschedule_code_input',
   RESCHEDULE_TIME: 'reschedule_time',
@@ -119,7 +120,8 @@ export class DialogStateManager {
       preferred_time_window: null,
       booking_code: null,
       selected_slot: null,
-      booking_code_generated: null
+      booking_code_generated: null,
+      event_id: null // Store event ID from calendar when created
     };
     this.context = {
       greeting_sent: false,

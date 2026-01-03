@@ -232,10 +232,67 @@ Format: `[A-Z]{2}-[A-Z0-9]{3}` (e.g., `NL-A742`)
 
 Codes are generated randomly and checked for uniqueness.
 
+## MCP Integration (Gmail & Calendar)
+
+The application now includes integration with the Gmail & Calendar MCP server for real calendar operations.
+
+### Setup
+
+1. **Install the MCP Server** (already done if you followed installation):
+   - The MCP server is located in `mcp-gmail-calendar/`
+   - It has been built and is ready to use
+
+2. **Get OAuth2 Credentials**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a project or select existing one
+   - Enable Gmail API and Google Calendar API
+   - Create OAuth2 credentials (Desktop application type)
+   - Download the JSON file
+
+3. **Place Credentials**:
+   - Save the credentials as `mcp-gmail-calendar/credentials.json`
+   - Or set `GOOGLE_CREDENTIALS_PATH` environment variable
+
+4. **Configure Environment Variables**:
+   ```bash
+   # Enable MCP integration
+   ENABLE_MCP=true
+   
+   # Path to MCP server (optional, defaults to mcp-gmail-calendar/dist/index.js)
+   MCP_GMAIL_CALENDAR_PATH=./mcp-gmail-calendar/dist/index.js
+   
+   # Path to OAuth2 credentials (optional, defaults to mcp-gmail-calendar/credentials.json)
+   GOOGLE_CREDENTIALS_PATH=./mcp-gmail-calendar/credentials.json
+   ```
+
+5. **Authenticate**:
+   - On first run, the MCP server will prompt for authentication
+   - Visit the provided URL to complete OAuth2 flow
+   - Tokens are stored in `mcp-gmail-calendar/tokens/`
+
+### Features
+
+When MCP is enabled (`ENABLE_MCP=true`), the following tools use real calendar operations:
+- `event_create_tentative` - Creates tentative calendar events
+- `event_update_time` - Updates/reschedules events
+- `event_cancel` - Cancels events
+- `calendar_get_availability` - Checks real calendar availability
+
+If MCP is disabled, the system uses mock mode. If MCP is enabled but fails, the operation will fail (no fallback to mock).
+
+### Troubleshooting MCP
+
+- **Authentication Required**: Make sure you've completed OAuth2 authentication
+- **Credentials Not Found**: Verify `GOOGLE_CREDENTIALS_PATH` points to valid OAuth2 credentials
+- **Server Not Starting**: Check that `mcp-gmail-calendar/dist/index.js` exists and is built
+- **Falling Back to Mock**: Check logs for MCP initialization errors
+
+See `mcp-gmail-calendar/SETUP_NOTES.md` for detailed setup instructions.
+
 ## Next Steps (Phase 2)
 
 Phase 2 will add:
-- Real MCP integration (Google Calendar, Sheets, Gmail)
+- ✅ Real MCP integration (Google Calendar, Sheets, Gmail) - **COMPLETED**
 - Replace mock availability with real calendar checking
 - Integration testing with actual services
 

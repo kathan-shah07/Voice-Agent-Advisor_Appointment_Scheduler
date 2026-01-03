@@ -81,16 +81,17 @@ app.get('/api/logs', (req, res) => {
 
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', phase: 'Phase 1: Core Conversation Engine' });
+  res.json({ 
+    status: 'ok'
+  });
 });
 
 // Start server
 app.listen(PORT, () => {
   console.log(`🚀 Voice Agent: Advisor Appointment Scheduler`);
-  console.log(` phase: Phase 1 - Core Conversation Engine`);
   console.log(`🌐 Server running on http://localhost:${PORT}`);
   console.log(`💬 Chat UI available at http://localhost:${PORT}`);
-  console.log(`\n⚠️  Make sure to set your AI provider API key in .env file`);
+  console.log(`\n⚠️  Configuration:`);
   console.log(`   AI_PROVIDER=${process.env.AI_PROVIDER || 'groq'}`);
 });
 

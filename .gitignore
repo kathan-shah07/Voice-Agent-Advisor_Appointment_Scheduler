@@ -114,3 +114,13 @@ audio_logs/
 # Note: req.txt, test-*.js, and *.md files are intentionally NOT ignored
 # as they are part of the project documentation and test scripts
 
+# Google Service Account Keys (Phase 2: MCP Integration)
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+!jest.config.js
+service-account*.json
+credentials*.json
+*-credentials.json
+
