@@ -1,0 +1,18 @@
+{
+  "id": "minimal_personal",
+  "name": "Minimal Personal",
+  "description": "Clean minimal template for personal emails",
+  "category": "personal",
+  "theme": "minimal",
+  "requiredVariables": [
+    "content"
+  ],
+  "optionalVariables": [
+    "recipientName",
+    "senderName"
+  ],
+  "htmlContent": "\n<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Email</title>\n    <style>\n        body {\n            font-family: Georgia, 'Times New Roman', serif;\n            line-height: 1.8;\n            color: #2d3748;\n            margin: 0;\n            padding: 40px 20px;\n            background-color: #ffffff;\n        }\n        .container {\n            max-width: 500px;\n            margin: 0 auto;\n        }\n        h1, h2, h3 {\n            color: #1a202c;\n            font-weight: 400;\n        }\n        p {\n            margin-bottom: 20px;\n        }\n        .signature {\n            margin-top: 40px;\n            padding-top: 20px;\n            border-top: 1px solid #e2e8f0;\n            font-style: italic;\n            color: #718096;\n        }\n        a {\n            color: #3182ce;\n            text-decoration: underline;\n        }\n        @media screen and (max-width: 600px) {\n            body {\n                padding: 20px 10px;\n            }\n        }\n    </style>\n</head>\n<body>\n    <div class=\"container\">\n        {{#if recipientName}}\n        <p>{{recipientName}},</p>\n        {{/if}}\n        \n        {{{content}}}\n        \n        {{#if senderName}}\n        <div class=\"signature\">\n            — {{senderName}}\n        </div>\n        {{/if}}\n    </div>\n</body>\n</html>",
+  "textContent": "Email body { font-family: Georgia, 'Times New Roman', serif; line-height: 1.8; color: #2d3748; margin: 0; padding: 40px 20px; background-color: #ffffff; } .container { max-width: 500px; margin: 0 auto; } h1, h2, h3 { color: #1a202c; font-weight: 400; } p { margin-bottom: 20px; } .signature { margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; font-style: italic; color: #718096; } a { color: #3182ce; text-decoration: underline; } @media screen and (max-width: 600px) { body { padding: 20px 10px; } } {{#if recipientName}} {{recipientName}}, {{/if}} {{{content}}} {{#if senderName}} — {{senderName}} {{/if}}",
+  "createdAt": "2026-01-03T13:55:21.878Z",
+  "updatedAt": "2026-01-03T13:55:21.878Z"
+}

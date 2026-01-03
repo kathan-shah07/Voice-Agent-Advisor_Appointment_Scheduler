@@ -114,13 +114,28 @@ audio_logs/
 # Note: req.txt, test-*.js, and *.md files are intentionally NOT ignored
 # as they are part of the project documentation and test scripts
 
-# Google Service Account Keys (Phase 2: MCP Integration)
+# Google Service Account Keys and Credentials (Phase 2: MCP Integration)
+credentials/
+tokens/
 *.json
 !package.json
 !package-lock.json
 !tsconfig.json
 !jest.config.js
+!templates/*.json
 service-account*.json
-credentials*.json
 *-credentials.json
+*-key.json
+
+# Data directory (runtime data)
+data/
+
+# MCP submodule build artifacts (keep source, ignore dist)
+mcp-gmail-calendar/dist/
+mcp-gmail-calendar/node_modules/
+mcp-gmail-calendar/logs/
+mcp-gmail-calendar/tokens/
+mcp-google-sheets/dist/
+mcp-google-sheets/node_modules/
+mcp-google-sheets/logs/
 
