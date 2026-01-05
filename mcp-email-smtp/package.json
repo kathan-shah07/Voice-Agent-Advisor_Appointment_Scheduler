@@ -1,0 +1,26 @@
+{
+    "name": "@mcp/email-smtp",
+    "version": "1.0.0",
+    "description": "MCP server for email via SMTP/Nodemailer",
+    "main": "dist/index.js",
+    "type": "module",
+    "scripts": {
+        "build": "tsc",
+        "dev": "tsx watch src/index.ts",
+        "start": "node dist/index.js"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.0.4",
+        "dayjs": "^1.11.13",
+        "dotenv": "^16.4.7",
+        "googleapis": "^169.0.0",
+        "nodemailer": "^6.9.16",
+        "zod": "^3.24.1"
+    },
+    "devDependencies": {
+        "@types/node": "^22.10.5",
+        "@types/nodemailer": "^6.4.17",
+        "tsx": "^4.19.2",
+        "typescript": "^5.7.2"
+    }
+}

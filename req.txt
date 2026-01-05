@@ -1033,15 +1033,12 @@ Example Verification:
 Phase 3: Voice Integration
 Goal: Add speech-to-text, text-to-speech, and telephony.
 What You'll Add:
-✅ Google Speech-to-Text integration
-✅ Google Text-to-Speech integration
-✅ Jambonz telephony server (OPTIONAL)
+✅ Elevan labs xt integration
+✅ elevan labs ch integration
 ✅ WebSocket audio streaming
 ✅ Audio buffer management
 Tech Stack:
-Add: @google-cloud/speech
-Add: @google-cloud/text-to-speech
-Add: Jambonz (Docker setup) (OPTIONAL)
+Elevan labs
 Add: WebSocket handler (ws package)
 Two Sub-Phases:
 Phase 3: Web Voice Testing

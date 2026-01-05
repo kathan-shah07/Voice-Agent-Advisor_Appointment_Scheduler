@@ -16,6 +16,7 @@ import { utcToZonedTime, zonedTimeToUtc } from 'date-fns-tz';
 import { formatIST24Hour, getCurrentIST } from '../utils/timezone.js';
 import { GmailCalendarMCPClient } from '../services/mcp/gmailCalendarMCPClient.js';
 import { GoogleSheetsMCPClient } from '../services/mcp/googleSheetsMCPClient.js';
+import { SMTPEmailMCPClient } from '../services/mcp/smtpEmailMCPClient.js';
 
 // In-memory storage for bookings
 const mockBookings = new Map(); // bookingCode -> booking data
@@ -35,12 +36,17 @@ export class ConversationEngine {
     this.mcpInitialized = false;
     this.sheetsClient = null;
     this.sheetsInitialized = false;
+    this.emailClient = null;
+    this.emailInitialized = false;
     // Initialize MCP clients asynchronously (don't await in constructor)
     this.initializeMCP().catch(err => {
       logger.log('error', `Failed to initialize MCP client: ${err.message}`, {});
     });
     this.initializeSheets().catch(err => {
       logger.log('error', `Failed to initialize Sheets client: ${err.message}`, {});
+    });
+    this.initializeEmail().catch(err => {
+      logger.log('error', `Failed to initialize Email client: ${err.message}`, {});
     });
   }
 
@@ -58,6 +64,22 @@ export class ConversationEngine {
       // Continue in mock mode if MCP fails
       this.mcpClient = null;
       this.mcpInitialized = false;
+    }
+  }
+
+  /**
+   * Initialize SMTP Email MCP client
+   */
+  async initializeEmail() {
+    try {
+      this.emailClient = new SMTPEmailMCPClient();
+      await this.emailClient.initialize();
+      this.emailInitialized = this.emailClient.isAvailable();
+      logger.log('mcp', 'SMTP Email MCP client initialized in conversation engine', {});
+    } catch (error) {
+      logger.log('error', `Failed to initialize SMTP Email MCP client: ${error.message}`, {});
+      this.emailClient = null;
+      this.emailInitialized = false;
     }
   }
 
@@ -113,11 +135,20 @@ export class ConversationEngine {
         const useSheets = mcpEnabled && this.sheetsInitialized && this.sheetsClient && this.sheetsClient.isAvailable() && sheetsTools.includes(name);
 
         if (useMCP) {
-          // Use real MCP client - no fallback, fail if MCP fails
-          const mcpResult = await this.mcpClient.executeTool(name, params);
-          result = { 
-            success: true, 
-            mock: false, 
+          let mcpResult;
+          if (emailTools.includes(name) && this.emailInitialized && this.emailClient) {
+            // Use SMTP Email MCP client
+            mcpResult = await this.emailClient.executeTool(name, params);
+          } else if (calendarTools.includes(name) && this.mcpInitialized && this.mcpClient) {
+            // Use Gmail/Calendar MCP client
+            mcpResult = await this.mcpClient.executeTool(name, params);
+          } else {
+            throw new Error(`Client for tool ${name} not initialized`);
+          }
+
+          result = {
+            success: true,
+            mock: false,
             function: { name, arguments: JSON.stringify(params) },
             data: mcpResult
           };
@@ -214,16 +245,16 @@ export class ConversationEngine {
     if (state === DIALOG_STATES.COMPLETED) {
       // Preserve booking code if it exists for potential cancel/reschedule
       const existingBookingCode = session.getSlots().booking_code_generated || session.getSlots().booking_code;
-      
+
       // Reset intent to allow new intent classification
       session.setIntent(null);
       session.transitionTo(DIALOG_STATES.GREETING);
-      
+
       // Preserve booking code in slots for future use
       if (existingBookingCode) {
         session.updateSlots({ booking_code: existingBookingCode });
       }
-      
+
       // Now proceed with normal intent classification
       // (will fall through to intent classification logic below)
     }
@@ -242,7 +273,7 @@ export class ConversationEngine {
           if (availableSlots.length > 0 && slotNum) {
             const slotIndex = parseInt(slotNum) - 1;
             if (slotIndex >= 0 && slotIndex < availableSlots.length) {
-              session.updateSlots({ 
+              session.updateSlots({
                 selected_slot: availableSlots[slotIndex],
                 topic: null // Will need to ask for topic
               });
@@ -279,10 +310,10 @@ export class ConversationEngine {
       const intent = await classifyIntent(userInput);
       session.setIntent(intent);
       logger.log('intent', `Intent classified: ${intent}`, { sessionId: session.sessionId, intent });
-      
+
       // Move to intent confirmation state
       session.transitionTo(DIALOG_STATES.INTENT_CONFIRMATION);
-      
+
       // Get intent display name
       const intentNames = {
         [INTENTS.BOOK_NEW]: 'book a new appointment',
@@ -291,7 +322,7 @@ export class ConversationEngine {
         [INTENTS.WHAT_TO_PREPARE]: 'know what to prepare',
         [INTENTS.CHECK_AVAILABILITY]: 'check availability'
       };
-      
+
       const response = `I understand you want to ${intentNames[intent] || 'book an appointment'}. Is that correct?`;
       session.addMessage('assistant', response);
       return {
@@ -310,7 +341,7 @@ export class ConversationEngine {
         // Intent confirmed, proceed to appropriate handler
         const confirmedIntent = session.getIntent();
         logger.log('intent', `Intent confirmed: ${confirmedIntent}`, { sessionId: session.sessionId, intent: confirmedIntent });
-        
+
         // Route to appropriate handler based on confirmed intent
         switch (confirmedIntent) {
           case INTENTS.BOOK_NEW:
@@ -501,7 +532,7 @@ export class ConversationEngine {
     if (state === DIALOG_STATES.TIME_PREFERENCE) {
       const extractedSlots = await extractSlots(userInput, INTENTS.BOOK_NEW);
       let dateTimePref = parseDateTimePreference(userInput || extractedSlots.preferred_day + ' ' + extractedSlots.preferred_time_window);
-      
+
       // Check if weekend was requested - decline gracefully
       if (dateTimePref.requestedWeekend || dateTimePref.isWeekend) {
         const response = `I understand you'd like to schedule for a weekend, but our advisor slots are only available Monday through Friday (10 AM to 6 PM IST). Could you please provide a weekday preference? For example, you could say "Monday afternoon" or "Tuesday morning".`;
@@ -514,12 +545,12 @@ export class ConversationEngine {
           toolCalls: []
         };
       }
-      
+
       // If standard parser didn't find date/time, try LLM interpretation
       if (!dateTimePref.date || !dateTimePref.timeWindow) {
         logger.log('llm', 'Standard parser unclear, trying LLM interpretation', { userInput });
         const llmInterpretation = await interpretDateTimeWithLLM(userInput);
-        
+
         if (llmInterpretation.date && llmInterpretation.timeWindow && llmInterpretation.confidence > 0.5) {
           // Check if LLM detected weekend
           if (llmInterpretation.requestedWeekend || llmInterpretation.isWeekend) {
@@ -533,13 +564,13 @@ export class ConversationEngine {
               toolCalls: []
             };
           }
-          
+
           // Use LLM interpretation - need to convert date string to Date object
           let parsedDate = null;
           if (llmInterpretation.date) {
             const today = new Date();
             const istToday = utcToZonedTime(today, 'Asia/Kolkata');
-            
+
             if (llmInterpretation.date.toLowerCase() === 'today') {
               parsedDate = today;
             } else if (llmInterpretation.date.toLowerCase() === 'tomorrow') {
@@ -569,13 +600,13 @@ export class ConversationEngine {
               }
             }
           }
-          
+
           if (parsedDate) {
             // Check if parsed date falls on weekend
             const parsedIST = utcToZonedTime(parsedDate, 'Asia/Kolkata');
             const dayOfWeek = getDay(parsedIST);
             const isWeekendDate = dayOfWeek === 0 || dayOfWeek === 6;
-            
+
             if (isWeekendDate) {
               const response = `I understand you'd like to schedule for a weekend, but our advisor slots are only available Monday through Friday (10 AM to 6 PM IST). Could you please provide a weekday preference? For example, you could say "Monday afternoon" or "Tuesday morning".`;
               session.addMessage('assistant', response);
@@ -587,7 +618,7 @@ export class ConversationEngine {
                 toolCalls: []
               };
             }
-            
+
             dateTimePref = {
               date: parsedDate,
               timeWindow: llmInterpretation.timeWindow,
@@ -595,10 +626,10 @@ export class ConversationEngine {
               isWeekend: false,
               requestedWeekend: false
             };
-            logger.log('llm', 'Using LLM interpretation for date/time', { 
-              original: userInput, 
+            logger.log('llm', 'Using LLM interpretation for date/time', {
+              original: userInput,
               interpreted: dateTimePref,
-              confidence: llmInterpretation.confidence 
+              confidence: llmInterpretation.confidence
             });
           } else if (llmInterpretation.needsClarification) {
             const response = `I want to make sure I understand your preferred date and time correctly. ${llmInterpretation.interpretation || 'Could you please provide a specific weekday and time preference? For example, "Monday afternoon" or "Tuesday at 3 PM".'}`;
@@ -623,7 +654,7 @@ export class ConversationEngine {
           };
         }
       }
-      
+
       if (dateTimePref.date && dateTimePref.timeWindow) {
         session.updateSlots({
           preferred_day: dateTimePref.date,
@@ -633,7 +664,7 @@ export class ConversationEngine {
         // FIRST: Check real-time calendar availability
         // Get existing bookings from both mock storage and real calendar
         const existingBookings = Array.from(mockBookings.values());
-        
+
         // Get real-time available slots from calendar
         const availableSlots = await getAvailableSlots(
           dateTimePref.date,
@@ -651,7 +682,7 @@ export class ConversationEngine {
           // Format as per req.txt: "I have two options on [date]: 3:00 PM to 3:30 PM IST, 4:30 PM to 5:00 PM IST"
           const istStart = utcToZonedTime(availableSlots[0].start, 'Asia/Kolkata');
           const dateStr = format(istStart, 'd MMMM');
-          
+
           const slotTimes = availableSlots.map(slot => {
             const istSlotStart = utcToZonedTime(slot.start, 'Asia/Kolkata');
             const istSlotEnd = utcToZonedTime(slot.end, 'Asia/Kolkata');
@@ -672,49 +703,49 @@ export class ConversationEngine {
         // NO AVAILABLE SLOTS: Check if user specified a specific time that overlaps
         // Parse user input for specific time preference
         const userInputLower = userInput.toLowerCase();
-        const hasSpecificTime = userInputLower.includes('at') || 
-                                userInputLower.match(/\d+\s*(am|pm|:)/i) ||
-                                userInputLower.match(/\b(10|11|12|1|2|3|4|5|6)\s*(am|pm|o'clock)/i);
-        
+        const hasSpecificTime = userInputLower.includes('at') ||
+          userInputLower.match(/\d+\s*(am|pm|:)/i) ||
+          userInputLower.match(/\b(10|11|12|1|2|3|4|5|6)\s*(am|pm|o'clock)/i);
+
         if (hasSpecificTime || availableSlots.length === 0) {
           // User wants a specific time or no slots available - check for overlap and offer waitlist
           const windowRange = TIME_WINDOW_RANGES[dateTimePref.timeWindow] || TIME_WINDOW_RANGES.any;
           const preferredHour = windowRange.start;
-          
+
           // Create preferred slot time in IST, then convert to UTC
           const istDate = utcToZonedTime(dateTimePref.date, 'Asia/Kolkata');
           const preferredSlotStartIST = new Date(istDate);
           preferredSlotStartIST.setHours(preferredHour, 0, 0, 0);
           const preferredSlotEndIST = new Date(preferredSlotStartIST);
           preferredSlotEndIST.setMinutes(preferredSlotEndIST.getMinutes() + 30);
-          
+
           // Convert to UTC for comparison
           const preferredSlotStartUTC = zonedTimeToUtc(preferredSlotStartIST, 'Asia/Kolkata');
           const preferredSlotEndUTC = zonedTimeToUtc(preferredSlotEndIST, 'Asia/Kolkata');
-          
+
           // Check for overlap with existing bookings
           const overlapCheck = checkSlotOverlap(preferredSlotStartUTC, preferredSlotEndUTC, existingBookings);
-          
+
           // If there's an overlap or no slots, offer waitlist
           if (overlapCheck.hasOverlap || availableSlots.length === 0) {
             // Store preferred slot for waitlist
-            session.updateSlots({ 
+            session.updateSlots({
               preferred_slot_start: preferredSlotStartUTC.toISOString(),
               preferred_slot_end: preferredSlotEndUTC.toISOString()
             });
             session.transitionTo(DIALOG_STATES.WAITLIST_CONFIRMATION);
-            
+
             const preferredTimeIST = utcToZonedTime(preferredSlotStartUTC, 'Asia/Kolkata');
             const timeStr = format(preferredTimeIST, 'h:mm a');
             const dateStr = format(preferredTimeIST, 'EEEE, d MMMM');
-            
+
             let response;
             if (overlapCheck.hasOverlap) {
               response = `I see that ${dateStr} at ${timeStr} IST is already booked. I can add you to a waitlist for that time slot, and the team will contact you if it becomes available. Would you like to be added to the waitlist?`;
             } else {
               response = `I don't have any available slots in that time window on ${dateStr}. I can add you to a waitlist, and the team will contact you with available options. Would you like to be added to the waitlist?`;
             }
-            
+
             session.addMessage('assistant', response);
             return {
               response,
@@ -773,15 +804,15 @@ export class ConversationEngine {
 
           const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
 
-          logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, { 
-            sessionId: session.sessionId, 
+          logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, {
+            sessionId: session.sessionId,
             toolCalls: toolCalls.map(t => t.function.name),
             bookingCode,
             results: results.map(r => ({ success: r.success, mock: r.mock }))
           });
 
           const response = `There are no matching advisor slots in that window. I can place you on a waitlist and the team will contact you with options. Your booking code is ${bookingCode}. ${SYSTEM_MESSAGES.SECURE_URL(this.secureUrl)}\n\nIs there anything else I can help you with? You can reschedule, cancel, check what to prepare, or ask about availability.`;
-          
+
           // Store booking code in slots for future cancel/reschedule operations
           session.updateSlots({ booking_code: bookingCode, booking_code_generated: bookingCode });
           session.transitionTo(DIALOG_STATES.COMPLETED);
@@ -802,7 +833,7 @@ export class ConversationEngine {
         // Format as per req.txt: "I have two options on [date]: 3:00 PM to 3:30 PM IST, 4:30 PM to 5:00 PM IST"
         const istStart = utcToZonedTime(availableSlots[0].start, 'Asia/Kolkata');
         const dateStr = format(istStart, 'd MMMM');
-        
+
         const slotTimes = availableSlots.map(slot => {
           const istSlotStart = utcToZonedTime(slot.start, 'Asia/Kolkata');
           const istSlotEnd = utcToZonedTime(slot.end, 'Asia/Kolkata');
@@ -884,15 +915,15 @@ export class ConversationEngine {
 
         const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
 
-        logger.log('tool_call', `Waitlist tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, { 
-          sessionId: session.sessionId, 
+        logger.log('tool_call', `Waitlist tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, {
+          sessionId: session.sessionId,
           toolCalls: toolCalls.map(t => t.function.name),
           bookingCode,
           results: results.map(r => ({ success: r.success, mock: r.mock }))
         });
 
         const response = `I've added you to the waitlist for that time slot. Your booking code is ${bookingCode}. ${SYSTEM_MESSAGES.SECURE_URL(this.secureUrl)}\n\nThe advisor team will contact you if the slot becomes available. Is there anything else I can help you with?`;
-        
+
         session.updateSlots({ booking_code: bookingCode, booking_code_generated: bookingCode });
         session.transitionTo(DIALOG_STATES.COMPLETED);
         session.addMessage('assistant', response);
@@ -922,9 +953,9 @@ export class ConversationEngine {
     if (state === DIALOG_STATES.SLOT_OFFER) {
       const availableSlots = slots.available_slots || [];
       const normalizedInput = userInput.toLowerCase().trim();
-      
+
       let slotIndex = -1;
-      
+
       // Try numeric selection first (1, 2, first, second)
       const numericMatch = normalizedInput.match(/(\d+)|(first|one)|(second|two)/);
       if (numericMatch) {
@@ -936,31 +967,31 @@ export class ConversationEngine {
           slotIndex = 1; // second
         }
       }
-      
+
       // If no numeric match, try to match by time description
       if (slotIndex < 0 && availableSlots.length > 0) {
         const dateTimePref = parseDateTimePreference(userInput);
-        
+
         // Try to match by time window or specific time
         for (let i = 0; i < availableSlots.length; i++) {
           const slot = availableSlots[i];
           const istSlotStart = utcToZonedTime(slot.start, 'Asia/Kolkata');
           const slotHour = istSlotStart.getHours();
           const slotMinute = istSlotStart.getMinutes();
-          
+
           // Check if user mentioned a specific time that matches
           if (dateTimePref.specificTime) {
             const userTime = utcToZonedTime(dateTimePref.specificTime, 'Asia/Kolkata');
             const userHour = userTime.getHours();
             const userMinute = userTime.getMinutes();
-            
+
             // Match if within 30 minutes
             if (Math.abs((slotHour * 60 + slotMinute) - (userHour * 60 + userMinute)) <= 30) {
               slotIndex = i;
               break;
             }
           }
-          
+
           // Match by time window keywords
           if (normalizedInput.includes('morning') && slotHour >= 10 && slotHour < 12) {
             slotIndex = i;
@@ -972,7 +1003,7 @@ export class ConversationEngine {
             slotIndex = i;
             break;
           }
-          
+
           // Match by specific hour mentions (e.g., "3 PM", "10 AM")
           const hourMatches = normalizedInput.match(/(\d{1,2})\s*(am|pm|o'?clock)/i);
           if (hourMatches) {
@@ -980,7 +1011,7 @@ export class ConversationEngine {
             const isPM = hourMatches[2] && hourMatches[2].toLowerCase().includes('pm');
             if (mentionedHour === 12 && !isPM) mentionedHour = 0;
             else if (mentionedHour !== 12 && isPM) mentionedHour += 12;
-            
+
             if (Math.abs(slotHour - mentionedHour) <= 1) {
               slotIndex = i;
               break;
@@ -988,7 +1019,7 @@ export class ConversationEngine {
           }
         }
       }
-      
+
       // If still no match, try to match by "earlier" or "later"
       if (slotIndex < 0 && availableSlots.length >= 2) {
         if (normalizedInput.includes('earlier') || normalizedInput.includes('first') || normalizedInput.includes('sooner')) {
@@ -1018,7 +1049,7 @@ export class ConversationEngine {
           const istStart = utcToZonedTime(slot.start, 'Asia/Kolkata');
           return `Option ${idx + 1}: ${format(istStart, 'h:mm a')} IST`;
         }).join('\n');
-        
+
         const response = `I have these options:\n${slotDescriptions}\n\nYou can say "1" or "2", "first" or "second", or describe the time like "3 PM" or "morning". Which would you prefer?`;
         session.addMessage('assistant', response);
         return {
@@ -1037,7 +1068,7 @@ export class ConversationEngine {
       if (lowerInput.includes('yes') || lowerInput.includes('correct') || lowerInput.includes('confirm')) {
         const selectedSlot = slots.selected_slot;
         const topic = slots.topic;
-        
+
         // Validate required data before generating booking code
         if (!selectedSlot || !selectedSlot.start || !selectedSlot.end) {
           logger.log('error', `Missing selected slot data`, { sessionId: session.sessionId, slots });
@@ -1052,7 +1083,7 @@ export class ConversationEngine {
             toolCalls: []
           };
         }
-        
+
         if (!topic) {
           logger.log('error', `Missing topic data`, { sessionId: session.sessionId, slots });
           const response = `I'm sorry, I need to know the topic. How can the advisor help you? You can choose from: KYC/Onboarding, SIP/Mandates, Statements and Tax Documents, Withdrawals and Timelines, or Account Changes and Nominee.`;
@@ -1066,13 +1097,13 @@ export class ConversationEngine {
             toolCalls: []
           };
         }
-        
+
         // Generate booking code
         let bookingCode;
         try {
           bookingCode = generateBookingCode(existingCodes);
-        existingCodes.add(bookingCode);
-        session.updateSlots({ booking_code_generated: bookingCode });
+          existingCodes.add(bookingCode);
+          session.updateSlots({ booking_code_generated: bookingCode });
         } catch (error) {
           logger.log('error', `Failed to generate booking code: ${error.message}`, { sessionId: session.sessionId, error: error.message });
           const response = `I'm sorry, there was an issue generating your booking code. Please try again.`;
@@ -1156,8 +1187,8 @@ export class ConversationEngine {
           }
         }
 
-        logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, { 
-          sessionId: session.sessionId, 
+        logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, {
+          sessionId: session.sessionId,
           toolCalls: toolCalls.map(t => t.function.name),
           bookingCode,
           eventId,
@@ -1166,7 +1197,7 @@ export class ConversationEngine {
 
         const slotFormatted = formatSlot(selectedSlot.start, selectedSlot.end);
         const response = `${SYSTEM_MESSAGES.BOOKING_CODE_READ(bookingCode)} Your tentative advisor slot for ${topic} is on ${slotFormatted}. ${SYSTEM_MESSAGES.SECURE_URL(this.secureUrl)} ${SYSTEM_MESSAGES.TENTATIVE_HOLD}\n\nIs there anything else I can help you with? You can reschedule, cancel, check what to prepare, or ask about availability.`;
-        
+
         // Store booking code and event ID in slots for future cancel/reschedule operations
         session.updateSlots({ booking_code: bookingCode, booking_code_generated: bookingCode, event_id: eventId });
         session.transitionTo(DIALOG_STATES.COMPLETED);
@@ -1229,7 +1260,7 @@ export class ConversationEngine {
     if (state === DIALOG_STATES.GREETING || !slots.booking_code) {
       const extractedSlots = await extractSlots(userInput, INTENTS.RESCHEDULE);
       let bookingCode = extractedSlots.booking_code;
-      
+
       // Try to extract booking code from input if not found by AI
       if (!bookingCode) {
         // Look for pattern XX-XXX or XX-XXXX
@@ -1283,11 +1314,11 @@ export class ConversationEngine {
     // Handle booking code input
     if (state === DIALOG_STATES.RESCHEDULE_CODE_INPUT) {
       const lowerInput = userInput.toLowerCase();
-      
+
       // Check if user forgot or doesn't have the booking code
-      if (lowerInput.includes('forgot') || lowerInput.includes("don't have") || lowerInput.includes('do not have') || 
-          lowerInput.includes('lost') || lowerInput.includes('cannot find') || lowerInput.includes("can't find") ||
-          lowerInput.includes('dont remember') || lowerInput.includes("don't remember") || lowerInput.includes('not have')) {
+      if (lowerInput.includes('forgot') || lowerInput.includes("don't have") || lowerInput.includes('do not have') ||
+        lowerInput.includes('lost') || lowerInput.includes('cannot find') || lowerInput.includes("can't find") ||
+        lowerInput.includes('dont remember') || lowerInput.includes("don't remember") || lowerInput.includes('not have')) {
         const response = SYSTEM_MESSAGES.BOOKING_CODE_FORGOTTEN;
         // Reset to intent detection after graceful decline
         session.setIntent(null);
@@ -1301,7 +1332,7 @@ export class ConversationEngine {
           toolCalls: []
         };
       }
-      
+
       const codeMatch = userInput.match(/\b[A-Z]{2}-[A-Z0-9]{3,4}\b/i);
       const bookingCode = codeMatch ? codeMatch[0].toUpperCase() : userInput.trim().toUpperCase();
 
@@ -1338,11 +1369,11 @@ export class ConversationEngine {
     if (state === DIALOG_STATES.RESCHEDULE_TIME) {
       const extractedSlots = await extractSlots(userInput, INTENTS.RESCHEDULE);
       let dateTimePref = parseDateTimePreference(
-        userInput || 
+        userInput ||
         (extractedSlots.new_preferred_day + ' ' + extractedSlots.new_preferred_time_window) ||
         'tomorrow'
       );
-      
+
       // Check if weekend was requested - decline gracefully
       if (dateTimePref.requestedWeekend || dateTimePref.isWeekend) {
         const response = `I understand you'd like to reschedule to a weekend, but our advisor slots are only available Monday through Friday (10 AM to 6 PM IST). Could you please provide a weekday preference? For example, you could say "Monday afternoon" or "Tuesday morning".`;
@@ -1355,12 +1386,12 @@ export class ConversationEngine {
           toolCalls: []
         };
       }
-      
+
       // If standard parser didn't find date/time, try LLM interpretation
       if (!dateTimePref.date || !dateTimePref.timeWindow) {
         logger.log('llm', 'Standard parser unclear for reschedule, trying LLM interpretation', { userInput });
         const llmInterpretation = await interpretDateTimeWithLLM(userInput);
-        
+
         if (llmInterpretation.date && llmInterpretation.timeWindow && llmInterpretation.confidence > 0.5) {
           // Check if LLM detected weekend
           if (llmInterpretation.requestedWeekend || llmInterpretation.isWeekend) {
@@ -1374,13 +1405,13 @@ export class ConversationEngine {
               toolCalls: []
             };
           }
-          
+
           // Use LLM interpretation - convert date string to Date object
           let parsedDate = null;
           if (llmInterpretation.date) {
             const today = new Date();
             const istToday = utcToZonedTime(today, 'Asia/Kolkata');
-            
+
             if (llmInterpretation.date.toLowerCase() === 'today') {
               parsedDate = today;
             } else if (llmInterpretation.date.toLowerCase() === 'tomorrow') {
@@ -1408,12 +1439,12 @@ export class ConversationEngine {
               }
             }
           }
-          
+
           if (parsedDate) {
             const parsedIST = utcToZonedTime(parsedDate, 'Asia/Kolkata');
             const dayOfWeek = getDay(parsedIST);
             const isWeekendDate = dayOfWeek === 0 || dayOfWeek === 6;
-            
+
             if (isWeekendDate) {
               const response = `I understand you'd like to reschedule to a weekend, but our advisor slots are only available Monday through Friday (10 AM to 6 PM IST). Could you please provide a weekday preference? For example, you could say "Monday afternoon" or "Tuesday morning".`;
               session.addMessage('assistant', response);
@@ -1425,7 +1456,7 @@ export class ConversationEngine {
                 toolCalls: []
               };
             }
-            
+
             dateTimePref = {
               date: parsedDate,
               timeWindow: llmInterpretation.timeWindow,
@@ -1456,7 +1487,7 @@ export class ConversationEngine {
           };
         }
       }
-      
+
       if (dateTimePref.date && dateTimePref.timeWindow) {
         const availableSlots = await getAvailableSlots(
           dateTimePref.date,
@@ -1467,13 +1498,13 @@ export class ConversationEngine {
 
         if (availableSlots.length > 0) {
           // Offer slots
-          session.updateSlots({ 
+          session.updateSlots({
             available_slots: availableSlots,
             preferred_day: dateTimePref.date,
             preferred_time_window: dateTimePref.timeWindow
           });
-          
-          const slotTexts = availableSlots.map((slot, index) => 
+
+          const slotTexts = availableSlots.map((slot, index) =>
             `${index + 1}. ${formatSlot(slot.start, slot.end)}`
           ).join('\n');
 
@@ -1518,11 +1549,11 @@ export class ConversationEngine {
 
       if (slotIndex >= 0 && slotIndex < availableSlots.length) {
         const selectedSlot = availableSlots[slotIndex];
-        
+
         // Store selected slot for confirmation
         session.updateSlots({ selected_slot: selectedSlot });
         session.transitionTo(DIALOG_STATES.RESCHEDULE_SLOT_CONFIRMATION);
-        
+
         const response = `Great. Confirming reschedule to ${formatSlot(selectedSlot.start, selectedSlot.end)}. Is that correct?`;
         session.addMessage('assistant', response);
         return {
@@ -1549,7 +1580,7 @@ export class ConversationEngine {
     if (state === DIALOG_STATES.RESCHEDULE_SLOT_CONFIRMATION) {
       const lowerInput = userInput.toLowerCase();
       const selectedSlot = slots.selected_slot;
-      
+
       if (lowerInput.includes('yes') || lowerInput.includes('confirm') || lowerInput.includes('correct')) {
         if (!selectedSlot) {
           const response = `I'm sorry, there was an issue with the slot selection. Please try again.`;
@@ -1563,7 +1594,7 @@ export class ConversationEngine {
           };
         }
 
-          const booking = mockBookings.get(slots.booking_code);
+        const booking = mockBookings.get(slots.booking_code);
         if (!booking) {
           const response = `I'm sorry, I couldn't find your booking. Please try again.`;
           session.addMessage('assistant', response);
@@ -1575,20 +1606,20 @@ export class ConversationEngine {
             toolCalls: []
           };
         }
-          
+
         // Create tentative hold (update booking with new time)
-          booking.start = selectedSlot.start;
-          booking.end = selectedSlot.end;
+        booking.start = selectedSlot.start;
+        booking.end = selectedSlot.end;
 
         // Get event ID from map, fallback to booking or session
         const eventId = bookingCodeToEventId.get(slots.booking_code) || booking.eventId || slots.event_id || null;
-        
+
         // Update booking with event ID if found in map
         if (eventId && !booking.eventId) {
           booking.eventId = eventId;
           mockBookings.set(slots.booking_code, booking);
         }
-        
+
         // Execute tool calls for reschedule - include eventId if available
         const toolCallConfigs = [
           {
@@ -1627,25 +1658,25 @@ export class ConversationEngine {
 
         const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
 
-        logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, { 
-          sessionId: session.sessionId, 
+        logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, {
+          sessionId: session.sessionId,
           toolCalls: toolCalls.map(t => t.function.name),
-          bookingCode: slots.booking_code 
+          bookingCode: slots.booking_code
         });
 
         const response = `Your appointment has been rescheduled to ${formatSlot(selectedSlot.start, selectedSlot.end)}. Your booking code remains ${slots.booking_code}. ${SYSTEM_MESSAGES.SECURE_URL(this.secureUrl)} Please update your contact details using the same secure link if needed.\n\nIs there anything else I can help you with?`;
-        
+
         // Preserve booking code for future operations
         session.updateSlots({ booking_code: slots.booking_code, booking_code_generated: slots.booking_code });
-          session.transitionTo(DIALOG_STATES.COMPLETED);
-          session.addMessage('assistant', response);
-          return {
-            response,
-            state: session.getState(),
-            intent: session.getIntent(),
-            slots: session.getSlots(),
-            toolCalls
-          };
+        session.transitionTo(DIALOG_STATES.COMPLETED);
+        session.addMessage('assistant', response);
+        return {
+          response,
+          state: session.getState(),
+          intent: session.getIntent(),
+          slots: session.getSlots(),
+          toolCalls
+        };
       } else if (lowerInput.includes('no') || lowerInput.includes('not') || lowerInput.includes('wrong')) {
         // User rejected the slot - go back to time preference
         session.updateSlots({ selected_slot: null });
@@ -1708,11 +1739,11 @@ export class ConversationEngine {
     // Step 1: Ask for booking code if not provided
     if (state === DIALOG_STATES.GREETING || !slots.booking_code) {
       const lowerInput = userInput.toLowerCase();
-      
+
       // Check if user forgot or doesn't have the booking code
-      if (lowerInput.includes('forgot') || lowerInput.includes("don't have") || lowerInput.includes('do not have') || 
-          lowerInput.includes('lost') || lowerInput.includes('cannot find') || lowerInput.includes("can't find") ||
-          lowerInput.includes('dont remember') || lowerInput.includes("don't remember") || lowerInput.includes('not have')) {
+      if (lowerInput.includes('forgot') || lowerInput.includes("don't have") || lowerInput.includes('do not have') ||
+        lowerInput.includes('lost') || lowerInput.includes('cannot find') || lowerInput.includes("can't find") ||
+        lowerInput.includes('dont remember') || lowerInput.includes("don't remember") || lowerInput.includes('not have')) {
         const response = SYSTEM_MESSAGES.BOOKING_CODE_FORGOTTEN;
         // Reset to intent detection after graceful decline
         session.setIntent(null);
@@ -1726,10 +1757,10 @@ export class ConversationEngine {
           toolCalls: []
         };
       }
-      
+
       const extractedSlots = await extractSlots(userInput, INTENTS.CANCEL);
       let bookingCode = extractedSlots.booking_code;
-      
+
       // Try to extract booking code from input if not found by AI
       if (!bookingCode) {
         const codeMatch = userInput.match(/\b[A-Z]{2}-[A-Z0-9]{3,4}\b/i);
@@ -1740,11 +1771,11 @@ export class ConversationEngine {
 
       if (bookingCode && mockBookings.has(bookingCode)) {
         const booking = mockBookings.get(bookingCode);
-        
+
         // Create tentative hold - store booking code and ask for confirmation
         session.updateSlots({ booking_code: bookingCode });
         session.transitionTo(DIALOG_STATES.CANCEL_CONFIRMATION);
-        
+
         const response = `I found your booking for ${booking.topic} on ${formatSlot(booking.start, booking.end)}. Are you sure you want to cancel this appointment?`;
         session.addMessage('assistant', response);
         return {
@@ -1785,11 +1816,11 @@ export class ConversationEngine {
     // Handle booking code input
     if (state === DIALOG_STATES.CANCEL_CODE_INPUT) {
       const lowerInput = userInput.toLowerCase();
-      
+
       // Check if user forgot or doesn't have the booking code
-      if (lowerInput.includes('forgot') || lowerInput.includes("don't have") || lowerInput.includes('do not have') || 
-          lowerInput.includes('lost') || lowerInput.includes('cannot find') || lowerInput.includes("can't find") ||
-          lowerInput.includes('dont remember') || lowerInput.includes("don't remember") || lowerInput.includes('not have')) {
+      if (lowerInput.includes('forgot') || lowerInput.includes("don't have") || lowerInput.includes('do not have') ||
+        lowerInput.includes('lost') || lowerInput.includes('cannot find') || lowerInput.includes("can't find") ||
+        lowerInput.includes('dont remember') || lowerInput.includes("don't remember") || lowerInput.includes('not have')) {
         const response = SYSTEM_MESSAGES.BOOKING_CODE_FORGOTTEN;
         session.addMessage('assistant', response);
         return {
@@ -1800,17 +1831,17 @@ export class ConversationEngine {
           toolCalls: []
         };
       }
-      
+
       const codeMatch = userInput.match(/\b[A-Z]{2}-[A-Z0-9]{3,4}\b/i);
       const bookingCode = codeMatch ? codeMatch[0].toUpperCase() : userInput.trim().toUpperCase();
 
       if (mockBookings.has(bookingCode)) {
         const booking = mockBookings.get(bookingCode);
-        
+
         // Create tentative hold - store booking code and ask for confirmation
         session.updateSlots({ booking_code: bookingCode });
         session.transitionTo(DIALOG_STATES.CANCEL_CONFIRMATION);
-        
+
         const response = `I found your booking for ${booking.topic} on ${formatSlot(booking.start, booking.end)}. Are you sure you want to cancel this appointment?`;
         session.addMessage('assistant', response);
         return {
@@ -1840,7 +1871,7 @@ export class ConversationEngine {
     if (state === DIALOG_STATES.CANCEL_CONFIRMATION) {
       const lowerInput = userInput.toLowerCase();
       const bookingCode = slots.booking_code;
-      
+
       if (lowerInput.includes('yes') || lowerInput.includes('confirm') || lowerInput.includes('sure') || lowerInput.includes('cancel')) {
         if (!bookingCode || !mockBookings.has(bookingCode)) {
           const response = `I'm sorry, I couldn't find your booking. Please try again.`;
@@ -1855,10 +1886,10 @@ export class ConversationEngine {
         }
 
         const booking = mockBookings.get(bookingCode);
-        
+
         // Get event ID from map, fallback to booking or session
         const eventId = bookingCodeToEventId.get(bookingCode) || booking.eventId || slots.event_id || null;
-        
+
         // Execute cancellation - delete booking and create tool calls
         mockBookings.delete(bookingCode);
         existingCodes.delete(bookingCode);
@@ -1871,7 +1902,7 @@ export class ConversationEngine {
         const toolCallConfigs = [
           {
             name: 'event_cancel',
-            params: { 
+            params: {
               bookingCode,
               eventId: eventId // Use eventId from map, booking, or session
             }
@@ -1903,14 +1934,14 @@ export class ConversationEngine {
 
         const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
 
-        logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, { 
-          sessionId: session.sessionId, 
+        logger.log('tool_call', `Tool calls executed: ${toolCalls.map(t => t.function.name).join(', ')}`, {
+          sessionId: session.sessionId,
           toolCalls: toolCalls.map(t => t.function.name),
-          bookingCode 
+          bookingCode
         });
 
         const response = `Your tentative advisor appointment with code ${bookingCode} is now cancelled.\n\nIs there anything else I can help you with? You can book a new appointment, check what to prepare, or ask about availability.`;
-        
+
         // Clear booking code since it's cancelled
         session.updateSlots({ booking_code: null, booking_code_generated: null });
         session.transitionTo(DIALOG_STATES.COMPLETED);
@@ -1965,7 +1996,7 @@ export class ConversationEngine {
    */
   async handleWhatToPrepare(session, userInput) {
     const state = session.getState();
-    
+
     // Directly trigger what to prepare flow as per req.txt
     // When coming from INTENT_CONFIRMATION, immediately ask for topic
     if (state === DIALOG_STATES.INTENT_CONFIRMATION) {
@@ -1981,44 +2012,44 @@ export class ConversationEngine {
         toolCalls: []
       };
     }
-    
+
     // Handle topic extraction and preparation guide
     if (state === DIALOG_STATES.GREETING || state === DIALOG_STATES.PREPARATION_INFO) {
       // Extract topic from user input
-    const extractedSlots = await extractSlots(userInput, INTENTS.WHAT_TO_PREPARE);
-    let topic = extractedSlots.topic || mapToTopic(userInput);
+      const extractedSlots = await extractSlots(userInput, INTENTS.WHAT_TO_PREPARE);
+      let topic = extractedSlots.topic || mapToTopic(userInput);
 
       // If no topic found, ask for it as per req.txt
-    if (!topic || !isValidTopic(topic)) {
-      const response = `Is this for KYC/Onboarding, SIP/Mandates, Statements and Tax Documents, Withdrawals and Timelines, or Account Changes and Nominee?`;
+      if (!topic || !isValidTopic(topic)) {
+        const response = `Is this for KYC/Onboarding, SIP/Mandates, Statements and Tax Documents, Withdrawals and Timelines, or Account Changes and Nominee?`;
         session.transitionTo(DIALOG_STATES.PREPARATION_INFO);
-      session.addMessage('assistant', response);
-      return {
-        response,
-        state: session.getState(),
-        intent: session.getIntent(),
-        slots: session.getSlots(),
-        toolCalls: []
-      };
-    }
+        session.addMessage('assistant', response);
+        return {
+          response,
+          state: session.getState(),
+          intent: session.getIntent(),
+          slots: session.getSlots(),
+          toolCalls: []
+        };
+      }
 
       // Validate and provide preparation guide
       if (topic && isValidTopic(topic)) {
-    const guides = PREPARATION_GUIDES[topic] || [];
+        const guides = PREPARATION_GUIDES[topic] || [];
         const response = `For ${topic}, please prepare:\n${guides.map((item, i) => `${i + 1}. ${item}`).join('\n')}\n\nWould you like to book an appointment for ${topic}?`;
-        
+
         session.updateSlots({ topic });
-        
+
         // Preserve booking code if it exists for future operations
         const existingBookingCode = session.getSlots().booking_code || session.getSlots().booking_code_generated;
         if (existingBookingCode) {
           session.updateSlots({ booking_code: existingBookingCode, booking_code_generated: existingBookingCode });
         }
-    
-    session.transitionTo(DIALOG_STATES.COMPLETED);
-    session.addMessage('assistant', response);
-    return {
-      response,
+
+        session.transitionTo(DIALOG_STATES.COMPLETED);
+        session.addMessage('assistant', response);
+        return {
+          response,
           state: session.getState(),
           intent: session.getIntent(),
           slots: session.getSlots(),
@@ -2026,24 +2057,24 @@ export class ConversationEngine {
         };
       }
     }
-    
+
     // Handle preparation info state (when user provides topic)
     if (state === DIALOG_STATES.PREPARATION_INFO) {
       const extractedSlots = await extractSlots(userInput, INTENTS.WHAT_TO_PREPARE);
       let topic = extractedSlots.topic || mapToTopic(userInput);
-      
+
       if (topic && isValidTopic(topic)) {
         const guides = PREPARATION_GUIDES[topic] || [];
         const response = `For ${topic}, please prepare:\n${guides.map((item, i) => `${i + 1}. ${item}`).join('\n')}\n\nWould you like to book an appointment for ${topic}?`;
-        
+
         session.updateSlots({ topic });
-        
+
         // Preserve booking code if it exists for future operations
         const existingBookingCode = session.getSlots().booking_code || session.getSlots().booking_code_generated;
         if (existingBookingCode) {
           session.updateSlots({ booking_code: existingBookingCode, booking_code_generated: existingBookingCode });
         }
-        
+
         session.transitionTo(DIALOG_STATES.COMPLETED);
         session.addMessage('assistant', response);
         return {
@@ -2065,7 +2096,7 @@ export class ConversationEngine {
         };
       }
     }
-    
+
     return {
       response: "I'm helping you prepare for your advisor meeting.",
       state: session.getState(),
@@ -2081,7 +2112,7 @@ export class ConversationEngine {
    */
   async handleCheckAvailability(session, userInput) {
     const state = session.getState();
-    
+
     // Directly trigger check availability flow as per req.txt
     // When coming from INTENT_CONFIRMATION, immediately ask for day range
     if (state === DIALOG_STATES.INTENT_CONFIRMATION) {
@@ -2097,13 +2128,13 @@ export class ConversationEngine {
         toolCalls: []
       };
     }
-    
+
     // Handle day range extraction and availability check
     if (state === DIALOG_STATES.GREETING || state === DIALOG_STATES.AVAILABILITY_CHECK) {
       // Extract day range from user input
       const extractedSlots = await extractSlots(userInput, INTENTS.CHECK_AVAILABILITY);
       let dayRange = extractedSlots.day_range || userInput || 'today';
-      
+
       // If no day range, ask for it as per req.txt
       if (!dayRange || dayRange.trim() === '') {
         const response = `Are you looking for slots today, tomorrow, or this week?`;
@@ -2117,15 +2148,15 @@ export class ConversationEngine {
           toolCalls: []
         };
       }
-      
+
       // Normalize day range input
       const dayRangeLower = dayRange.toLowerCase().trim();
-      
+
       // Determine dates to check based on day range
       const datesToCheck = [];
       const today = getCurrentIST();
       const todayIST = utcToZonedTime(today, 'Asia/Kolkata');
-      
+
       if (dayRangeLower.includes('today')) {
         datesToCheck.push({ date: today, label: 'Today' });
       } else if (dayRangeLower.includes('tomorrow')) {
@@ -2137,7 +2168,7 @@ export class ConversationEngine {
         // Find Monday of current week
         const daysFromMonday = currentDay === 0 ? 6 : currentDay - 1; // Sunday = 0, so 6 days back
         const monday = addDays(today, -daysFromMonday);
-        
+
         // Add all weekdays (Monday to Friday)
         for (let i = 0; i < 5; i++) {
           const weekday = addDays(monday, i);
@@ -2157,22 +2188,22 @@ export class ConversationEngine {
           datesToCheck.push({ date: today, label: 'Today' });
         }
       }
-      
+
       // Collect available slots from MCP calendar or mock
       const allAvailableSlots = [];
       const mcpEnabled = process.env.ENABLE_MCP === 'true';
       const useMCP = mcpEnabled && this.mcpInitialized && this.mcpClient && this.mcpClient.isAvailable();
-      
+
       // Check availability for each date
       for (const { date, label } of datesToCheck) {
         const dateIST = utcToZonedTime(date, 'Asia/Kolkata');
         const dateStr = format(dateIST, 'yyyy-MM-dd');
-        
+
         // Try MCP calendar tool first
         if (useMCP) {
           try {
             logger.log('mcp', `Checking availability via MCP for ${dateStr}`, { dateStr, label });
-            
+
             const toolCallConfigs = [
               {
                 name: 'calendar_get_availability',
@@ -2183,15 +2214,15 @@ export class ConversationEngine {
                 }
               }
             ];
-            
+
             const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
             const result = results[0];
-            
+
             if (result && result.success && result.data) {
               // Parse MCP free/busy response
               // The response structure is: { calendars: { calendarId: { busy: [...] } } }
               let busyPeriods = [];
-              
+
               if (result.data.calendars) {
                 // Extract busy periods from all calendars
                 Object.values(result.data.calendars).forEach(calendarData => {
@@ -2209,7 +2240,7 @@ export class ConversationEngine {
                   end: new Date(slot.end || slot.endTime)
                 }));
               }
-              
+
               // Calculate available slots from busy periods
               // Working hours: 10:00-18:00 IST
               const dateIST = utcToZonedTime(date, 'Asia/Kolkata');
@@ -2217,19 +2248,19 @@ export class ConversationEngine {
               startOfDay.setHours(10, 0, 0, 0);
               const endOfDay = new Date(dateIST);
               endOfDay.setHours(18, 0, 0, 0);
-              
+
               // Convert to UTC for comparison
               const startTimeUTC = zonedTimeToUtc(startOfDay, 'Asia/Kolkata');
               const endTimeUTC = zonedTimeToUtc(endOfDay, 'Asia/Kolkata');
-              
+
               // Sort busy periods by start time
               busyPeriods.sort((a, b) => a.start.getTime() - b.start.getTime());
-              
+
               // Find available slots (gaps between busy periods)
               const availableSlots = [];
               let currentTime = startTimeUTC;
               const slotDuration = 30 * 60 * 1000; // 30 minutes in milliseconds
-              
+
               for (const busy of busyPeriods) {
                 // If there's a gap before this busy period, add available slots
                 while (currentTime < busy.start && currentTime + slotDuration <= endTimeUTC) {
@@ -2242,19 +2273,19 @@ export class ConversationEngine {
                     });
                   }
                   currentTime = new Date(currentTime.getTime() + slotDuration);
-                  
+
                   // Stop if we have enough slots
                   if (availableSlots.length >= 4) break;
                 }
-                
+
                 // Move current time past the busy period
                 if (busy.end > currentTime) {
                   currentTime = busy.end;
                 }
-                
+
                 if (availableSlots.length >= 4) break;
               }
-              
+
               // Add remaining slots after last busy period
               while (currentTime < endTimeUTC && availableSlots.length < 4) {
                 const slotEnd = new Date(currentTime.getTime() + slotDuration);
@@ -2267,23 +2298,23 @@ export class ConversationEngine {
                 }
                 currentTime = new Date(currentTime.getTime() + slotDuration);
               }
-              
+
               allAvailableSlots.push(...availableSlots);
-              logger.log('mcp', `MCP returned ${availableSlots.length} available slots for ${dateStr}`, { 
-                dateStr, 
+              logger.log('mcp', `MCP returned ${availableSlots.length} available slots for ${dateStr}`, {
+                dateStr,
                 slotsCount: availableSlots.length,
                 busyPeriodsCount: busyPeriods.length
               });
             }
           } catch (error) {
-            logger.log('error', `MCP availability check failed for ${dateStr}, falling back to mock`, { 
+            logger.log('error', `MCP availability check failed for ${dateStr}, falling back to mock`, {
               error: error.message,
-              dateStr 
+              dateStr
             });
             // Fall through to mock availability
           }
         }
-        
+
         // Fallback to mock availability if MCP not available or failed
         if (!useMCP || allAvailableSlots.length === 0) {
           const dateTimePref = parseDateTimePreference(dayRange);
@@ -2293,22 +2324,22 @@ export class ConversationEngine {
             30,
             Array.from(mockBookings.values())
           );
-          
+
           allAvailableSlots.push(...mockSlots.map(slot => ({
             ...slot,
             dateLabel: label
           })));
         }
-        
+
         // Stop if we have enough slots (2-4 as per requirements)
         if (allAvailableSlots.length >= 4) {
           break;
         }
       }
-      
+
       // Take up to 4 slots (as per req.txt: "2-4 sample windows")
       const selectedSlots = allAvailableSlots.slice(0, 4);
-      
+
       if (selectedSlots.length > 0) {
         // Group slots by date label
         const slotsByDate = {};
@@ -2319,7 +2350,7 @@ export class ConversationEngine {
           }
           slotsByDate[label].push(slot);
         });
-        
+
         // Format response as per req.txt: "Today I have: 11:00–11:30 AM IST, 3:00–3:30 PM IST."
         const dateResponses = Object.entries(slotsByDate).map(([dateLabel, slots]) => {
           const slotTimes = slots.map(slot => {
@@ -2327,12 +2358,12 @@ export class ConversationEngine {
             const istSlotEnd = utcToZonedTime(slot.end, 'Asia/Kolkata');
             return `${format(istSlotStart, 'h:mm a')}–${format(istSlotEnd, 'h:mm a')} IST`;
           }).join(', ');
-          
+
           return `${dateLabel} I have: ${slotTimes}.`;
         });
-        
+
         const response = `${dateResponses.join('\n')}\n\nWould you like to book one of these? You can say "book slot 1" or "book the first one".`;
-        
+
         // Store available slots for potential booking
         session.updateSlots({ available_slots: selectedSlots });
         session.addMessage('assistant', response);
@@ -2356,7 +2387,7 @@ export class ConversationEngine {
         };
       }
     }
-    
+
     return {
       response: "I'm checking availability for you.",
       state: session.getState(),

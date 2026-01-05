@@ -5,7 +5,6 @@
  * Environment Variables Used:
  * - GOOGLE_CALENDAR_ID: Calendar ID to use for all calendar operations (default: 'primary')
  * - GOOGLE_SPREADSHEET_ID: Google Sheets ID for future Sheets operations
- * - ADVISOR_EMAIL: Email address for creating email drafts
  * - GOOGLE_SHEET_NAME: Sheet name within the spreadsheet (default: 'Advisor Pre-Bookings')
  */
 
@@ -31,26 +30,25 @@ export class GmailCalendarMCPClient extends MCPClient {
     // Load configuration from environment variables
     this.calendarId = process.env.GOOGLE_CALENDAR_ID || 'primary';
     this.spreadsheetId = process.env.GOOGLE_SPREADSHEET_ID || null;
-    this.advisorEmail = process.env.ADVISOR_EMAIL || null;
     this.sheetName = process.env.GOOGLE_SHEET_NAME || 'Advisor Pre-Bookings';
   }
 
   async _doInitialize() {
     try {
       // Get MCP server path from environment or use default
-      const mcpServerPath = process.env.MCP_GMAIL_CALENDAR_PATH || 
+      const mcpServerPath = process.env.MCP_GMAIL_CALENDAR_PATH ||
         path.join(__dirname, '../../../mcp-gmail-calendar/dist/index.js');
-      
+
       // Get credentials path
-      const credentialsPath = process.env.GOOGLE_CREDENTIALS_PATH || 
+      const credentialsPath = process.env.GOOGLE_CREDENTIALS_PATH ||
         path.join(__dirname, '../../../mcp-gmail-calendar/credentials.json');
 
       logger.log('mcp', `Starting Gmail & Calendar MCP server: ${mcpServerPath}`, {});
 
       // Get tokens path (default to mcp-gmail-calendar/tokens)
-      const tokensPath = process.env.TOKENS_PATH || 
+      const tokensPath = process.env.TOKENS_PATH ||
         path.join(__dirname, '../../../mcp-gmail-calendar/tokens');
-      
+
       // Create stdio transport with command
       this.transport = new StdioClientTransport({
         command: 'node',
@@ -79,7 +77,7 @@ export class GmailCalendarMCPClient extends MCPClient {
       logger.log('mcp', 'Connected to Gmail & Calendar MCP server', {
         calendarId: this.calendarId,
         spreadsheetId: this.spreadsheetId || 'not configured',
-        advisorEmail: this.advisorEmail || 'not configured',
+        spreadsheetId: this.spreadsheetId || 'not configured',
         sheetName: this.sheetName
       });
 
@@ -106,13 +104,15 @@ export class GmailCalendarMCPClient extends MCPClient {
       });
 
       if (accountsResult.content && accountsResult.content.length > 0) {
-        const accountsData = JSON.parse(accountsResult.content[0].text);
+        const accountsData = typeof accountsResult.content[0].text === 'string'
+          ? JSON.parse(accountsResult.content[0].text)
+          : accountsResult.content[0].text;
         const accounts = accountsData.accounts || [];
-        
+
         if (accounts.length > 0) {
           // Determine which account to use
           let accountToUse = null;
-          
+
           // If ADVISOR_EMAIL is set and matches an authenticated account, use it
           if (this.advisorEmail) {
             accountToUse = accounts.find(acc => acc.email === this.advisorEmail);
@@ -120,15 +120,15 @@ export class GmailCalendarMCPClient extends MCPClient {
               logger.log('mcp', `Found ADVISOR_EMAIL in authenticated accounts: ${this.advisorEmail}`, {});
             }
           }
-          
+
           // Otherwise, use the first available account
           if (!accountToUse) {
             accountToUse = accounts[0];
           }
-          
+
           this.currentAccount = accountToUse.email;
           logger.log('mcp', `Selected account: ${this.currentAccount}`, {});
-          
+
           // Always switch to ensure the account is active
           // The MCP server loads tokens but doesn't automatically set currentAccount
           try {
@@ -137,19 +137,27 @@ export class GmailCalendarMCPClient extends MCPClient {
               arguments: { email: this.currentAccount }
             });
             logger.log('mcp', `Successfully switched to account: ${this.currentAccount}`, {});
-            
+
             // Small delay to ensure account switch is processed
             await new Promise(resolve => setTimeout(resolve, 100));
-            
+
             // Verify the account is now current
             try {
               const verifyResult = await this.client.callTool({
                 name: 'get_current_account',
                 arguments: {}
               });
-              
+
               if (verifyResult.content && verifyResult.content.length > 0) {
-                const currentAccountData = JSON.parse(verifyResult.content[0].text);
+                let currentAccountData;
+                try {
+                  currentAccountData = JSON.parse(verifyResult.content[0].text);
+                } catch {
+                  // Fallback for non-JSON response: "Account selected: email@example.com"
+                  const match = verifyResult.content[0].text.match(/Account selected: (.+)$/);
+                  currentAccountData = { email: match ? match[1].trim() : verifyResult.content[0].text };
+                }
+
                 if (currentAccountData.email === this.currentAccount) {
                   logger.log('mcp', `Account verified as current: ${this.currentAccount}`, {});
                 } else {
@@ -160,7 +168,7 @@ export class GmailCalendarMCPClient extends MCPClient {
               logger.log('warning', `Could not verify current account: ${verifyError.message}`, {});
               // Continue anyway - switch_account may have succeeded
             }
-            
+
             return true;
           } catch (switchError) {
             logger.log('error', `Failed to switch account: ${switchError.message}`, {});
@@ -169,14 +177,7 @@ export class GmailCalendarMCPClient extends MCPClient {
         } else {
           // No accounts found - check if we should auto-authenticate
           logger.log('mcp', 'No authenticated accounts found in MCP server', {});
-          
-          if (this.advisorEmail) {
-            logger.log('mcp', `ADVISOR_EMAIL is set (${this.advisorEmail}), but account is not authenticated`, {});
-            logger.log('mcp', 'Please run: node authenticate-mcp.js ' + this.advisorEmail, {});
-            throw new Error(`No authenticated accounts found. Please authenticate first using: node authenticate-mcp.js ${this.advisorEmail}`);
-          } else {
-            throw new Error('No authenticated accounts found. Please authenticate first. Use: node authenticate-mcp.js your-email@gmail.com');
-          }
+
         }
       } else {
         throw new Error('Failed to list accounts from MCP server - no response content');
@@ -195,8 +196,7 @@ export class GmailCalendarMCPClient extends MCPClient {
       'event_create_tentative': 'event_create',
       'event_update_time': 'event_update',
       'event_cancel': 'event_delete',
-      'calendar_get_availability': 'calendar_get_availability',
-      'email_create_advisor_draft': 'email_create_draft' // Map to draft creation tool
+      'calendar_get_availability': 'calendar_get_availability'
     };
 
     return toolMap[internalName] || internalName;
@@ -258,7 +258,7 @@ export class GmailCalendarMCPClient extends MCPClient {
           any: { start: 10, end: 18 }
         };
         const window = timeWindowRanges[params.timeWindow] || timeWindowRanges.any;
-        
+
         const startTime = new Date(date);
         startTime.setHours(window.start, 0, 0, 0);
         const endTime = new Date(date);
@@ -284,7 +284,7 @@ export class GmailCalendarMCPClient extends MCPClient {
       // Handle special cases that need event lookup by booking code
       if (toolName === 'event_update_time') {
         let eventId = params.eventId; // Use eventId from session if available
-        
+
         // If no eventId provided, find event by booking code
         if (!eventId) {
           const event = await this.findEventByBookingCode(params.bookingCode);
@@ -322,7 +322,7 @@ export class GmailCalendarMCPClient extends MCPClient {
 
       if (toolName === 'event_cancel') {
         let eventId = params.eventId; // Use eventId from session if available
-        
+
         // If no eventId provided, find event by booking code
         if (!eventId) {
           const event = await this.findEventByBookingCode(params.bookingCode);
@@ -343,29 +343,6 @@ export class GmailCalendarMCPClient extends MCPClient {
         });
 
         return this.parseResult(result);
-      }
-
-      // Handle email draft creation - try draft tool first, fallback to send if not available
-      if (toolName === 'email_create_advisor_draft') {
-        const mcpParams = this.mapParams(toolName, params);
-        
-        try {
-          // Try to use draft creation tool if available
-          logger.log('mcp', `Calling MCP tool: email_create_draft`, { params: mcpParams });
-          const result = await this.client.callTool({
-            name: 'email_create_draft',
-            arguments: mcpParams
-          });
-          return this.parseResult(result);
-        } catch (error) {
-          // If draft tool doesn't exist, log warning and return success (draft creation is optional)
-          if (error.message && error.message.includes('MethodNotFound')) {
-            logger.log('warning', `Draft creation tool not available in MCP server. Email draft creation skipped.`, {});
-            // Return mock success - draft creation is not critical
-            return { id: 'draft_mock', message: 'Draft creation not yet implemented in MCP server' };
-          }
-          throw error;
-        }
       }
 
       // Map tool name and params for other tools
@@ -416,7 +393,7 @@ export class GmailCalendarMCPClient extends MCPClient {
       timeMin.setDate(timeMin.getDate() - 30); // Look back 30 days
       const timeMax = new Date(now);
       timeMax.setDate(timeMax.getDate() + 365); // Look forward 365 days
-      
+
       const timeMinISO = timeMin.toISOString();
       const timeMaxISO = timeMax.toISOString();
 
@@ -449,20 +426,20 @@ export class GmailCalendarMCPClient extends MCPClient {
             logger.log('mcp', `Found event by booking code in extendedProperties: ${event.id}`, {});
             return event;
           }
-          
+
           // Also check summary for booking code (backward compatibility)
           if (event.summary?.includes(bookingCode)) {
             logger.log('mcp', `Found event by booking code in summary: ${event.id}`, {});
             return event;
           }
-          
+
           // Check description as well
           if (event.description?.includes(bookingCode)) {
             logger.log('mcp', `Found event by booking code in description: ${event.id}`, {});
             return event;
           }
         }
-        
+
         logger.log('warning', `No event found with booking code: ${bookingCode}`, {
           searchedEvents: events.length
         });
@@ -489,13 +466,6 @@ export class GmailCalendarMCPClient extends MCPClient {
    */
   getSpreadsheetId() {
     return this.spreadsheetId;
-  }
-
-  /**
-   * Get advisor email from environment (for email draft operations)
-   */
-  getAdvisorEmail() {
-    return this.advisorEmail;
   }
 
   /**
