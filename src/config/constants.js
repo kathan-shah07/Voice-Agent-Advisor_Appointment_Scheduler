@@ -42,8 +42,8 @@ export const WORKING_DAYS = {
   FRIDAY: 5
 };
 
-// Only Monday through Friday (exclude Saturday=6 and Sunday=0)
-export const WORKING_DAYS_LIST = [1, 2, 3, 4, 5];
+// Monday through Saturday (exclude Sunday=0)
+export const WORKING_DAYS_LIST = [1, 2, 3, 4, 5, 6];
 
 export const SLOT_DURATION_MINUTES = 30;
 export const WORKING_HOURS = { start: 10, end: 18 }; // 10:00 AM to 6:00 PM IST

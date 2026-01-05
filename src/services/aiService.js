@@ -5,27 +5,29 @@
 import Groq from 'groq-sdk';
 import Anthropic from '@anthropic-ai/sdk';
 import dotenv from 'dotenv';
-import { 
-  intentClassificationLimiter, 
-  slotExtractionLimiter, 
-  generalAPILimiter 
+import {
+  intentClassificationLimiter,
+  slotExtractionLimiter,
+  generalAPILimiter
 } from '../utils/rateLimiter.js';
-import { 
-  classifyIntentWithKeywords, 
-  isRateLimitError, 
-  shouldUseKeywordFallback 
+import {
+  classifyIntentWithKeywords,
+  isRateLimitError,
+  shouldUseKeywordFallback
 } from '../utils/keywordClassifier.js';
 import { logger } from '../utils/logger.js';
+import { utcToZonedTime } from 'date-fns-tz';
+import { format } from 'date-fns';
 
 dotenv.config();
 
 const AI_PROVIDER = process.env.AI_PROVIDER || 'groq';
 
 // Detect if we're in a test environment
-const IS_TEST_ENV = process.env.NODE_ENV === 'test' || 
-                     process.env.JEST_WORKER_ID !== undefined ||
-                     typeof jest !== 'undefined' ||
-                     (typeof process !== 'undefined' && process.argv.some(arg => arg.includes('jest')));
+const IS_TEST_ENV = process.env.NODE_ENV === 'test' ||
+  process.env.JEST_WORKER_ID !== undefined ||
+  typeof jest !== 'undefined' ||
+  (typeof process !== 'undefined' && process.argv.some(arg => arg.includes('jest')));
 
 let groqClient = null;
 let claudeClient = null;
@@ -88,7 +90,7 @@ export async function getAIResponse(systemPrompt, messages, tools = []) {
     if (isRateLimitError(error)) {
       error.isRateLimit = true;
     }
-    
+
     console.error('AI Service Error:', error.message);
     if (error.status || error.response?.status) {
       console.error('API Response Status:', error.status || error.response.status);
@@ -106,29 +108,29 @@ export async function getAIResponse(systemPrompt, messages, tools = []) {
 async function getGroqResponse(systemPrompt, messages, tools, retryCount = 0) {
   const MAX_RETRIES = 2;
   const RETRY_DELAY_BASE = 1000; // Base delay in ms
-  
+
   try {
     // Determine which rate limiter to use
-    const isIntentClassification = systemPrompt.includes('intent classifier') || 
-                                   systemPrompt.includes('expert intent classifier');
+    const isIntentClassification = systemPrompt.includes('intent classifier') ||
+      systemPrompt.includes('expert intent classifier');
     const isSlotExtraction = systemPrompt.includes('slot extractor');
-    
-    const limiter = isIntentClassification 
-      ? intentClassificationLimiter 
-      : isSlotExtraction 
-        ? slotExtractionLimiter 
+
+    const limiter = isIntentClassification
+      ? intentClassificationLimiter
+      : isSlotExtraction
+        ? slotExtractionLimiter
         : generalAPILimiter;
-    
+
     // Wait if rate limit would be exceeded
     await limiter.waitIfNeeded();
-    
+
     // Use a current Groq model - llama-3.3-70b-versatile or fallback to llama-3.1-8b-instant
     const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
-    
+
     // Optimize parameters for intent classification vs other tasks
     const temperature = isIntentClassification ? 0.1 : 0.3; // Very low temperature for consistent classification
     const maxTokens = isIntentClassification ? 50 : 500; // Very short response for intent classification
-    
+
     const completion = await groqClient.chat.completions.create({
       model: model,
       messages: [
@@ -147,11 +149,11 @@ async function getGroqResponse(systemPrompt, messages, tools, retryCount = 0) {
     }
 
     const response = completion.choices[0];
-    
+
     if (!response || !response.message) {
       throw new Error('Invalid response structure from Groq API');
     }
-    
+
     return {
       content: response.message.content || '',
       toolCalls: response.message.tool_calls || [],
@@ -162,11 +164,11 @@ async function getGroqResponse(systemPrompt, messages, tools, retryCount = 0) {
     if (isRateLimitError(error) && retryCount < MAX_RETRIES) {
       const retryDelay = RETRY_DELAY_BASE * Math.pow(2, retryCount); // Exponential backoff
       console.warn(`⚠️  Rate limit hit. Retrying in ${retryDelay}ms (attempt ${retryCount + 1}/${MAX_RETRIES})...`);
-      
+
       await new Promise(resolve => setTimeout(resolve, retryDelay));
       return await getGroqResponse(systemPrompt, messages, tools, retryCount + 1);
     }
-    
+
     // Log error details
     console.error('Groq API Error:', error.message);
     if (error.status) {
@@ -175,13 +177,13 @@ async function getGroqResponse(systemPrompt, messages, tools, retryCount = 0) {
     if (error.response) {
       console.error('API Response:', error.response.data);
     }
-    
+
     // Enhance error with rate limit info
     if (isRateLimitError(error)) {
       error.isRateLimit = true;
       error.retryAfter = error.response?.headers?.['retry-after'] || 60;
     }
-    
+
     throw error;
   }
 }
@@ -232,17 +234,17 @@ export async function classifyIntent(userInput, retryCount = 0) {
   if (IS_TEST_ENV) {
     console.log(`⚠️  Test environment: Skipping Groq API call for intent classification. Using keyword-based classifier instead.`);
     const keywordIntent = classifyIntentWithKeywords(userInput);
-    logger.log('keyword', `Intent classified via keywords (test mode): ${keywordIntent}`, { 
-      userInput, 
+    logger.log('keyword', `Intent classified via keywords (test mode): ${keywordIntent}`, {
+      userInput,
       intent: keywordIntent,
-      method: 'keyword_test_mode' 
+      method: 'keyword_test_mode'
     });
     return keywordIntent;
   }
 
   const MAX_RETRIES = 2;
   const validIntents = ['book_new', 'reschedule', 'cancel', 'what_to_prepare', 'check_availability'];
-  
+
   const systemPrompt = `You are an expert intent classifier for an advisor appointment scheduling system.
 
 Your task is to analyze the user's input and classify it into EXACTLY ONE of these 5 categories:
@@ -287,7 +289,7 @@ Your response must be exactly one of these 5 words: book_new, reschedule, cancel
   try {
     const response = await getAIResponse(systemPrompt, messages);
     let intent = response.content.trim().toLowerCase();
-    
+
     // Aggressive cleaning of LLM response variations
     intent = intent
       // Remove common prefixes
@@ -307,52 +309,52 @@ Your response must be exactly one of these 5 words: book_new, reschedule, cancel
       // Remove trailing punctuation and whitespace
       .replace(/[.,;!?\n\r].*$/, '')
       .trim();
-    
+
     // Try to find intent in the cleaned string
     for (const validIntent of validIntents) {
       if (intent === validIntent || intent.includes(validIntent)) {
-        logger.log('llm', `Intent classified: ${validIntent}`, { 
-          userInput, 
+        logger.log('llm', `Intent classified: ${validIntent}`, {
+          userInput,
           intent: validIntent,
           method: 'llm',
-          rawResponse: response.content 
+          rawResponse: response.content
         });
         return validIntent;
       }
     }
-    
+
     // If still not found and we have retries left, try again with a more explicit prompt
     if (retryCount < MAX_RETRIES) {
       logger.log('llm', `Intent classification unclear, retrying (attempt ${retryCount + 1}/${MAX_RETRIES})`, { userInput });
       return await classifyIntent(userInput, retryCount + 1);
     }
-    
+
     // Last resort: try to extract intent from response using pattern matching
     const intentPattern = new RegExp(`\\b(${validIntents.join('|')})\\b`, 'i');
     const match = intent.match(intentPattern);
     if (match) {
       const matchedIntent = match[1].toLowerCase();
-      logger.log('llm', `Intent classified via pattern matching: ${matchedIntent}`, { 
-        userInput, 
+      logger.log('llm', `Intent classified via pattern matching: ${matchedIntent}`, {
+        userInput,
         intent: matchedIntent,
-        method: 'llm_pattern' 
+        method: 'llm_pattern'
       });
       return matchedIntent;
     }
-    
+
     // If LLM response is unclear, use keyword classifier as fallback
     logger.log('fallback', `LLM response unclear, using keyword classifier`, { userInput });
     const keywordIntent = classifyIntentWithKeywords(userInput);
-    logger.log('keyword', `Intent classified via keywords: ${keywordIntent}`, { 
-      userInput, 
+    logger.log('keyword', `Intent classified via keywords: ${keywordIntent}`, {
+      userInput,
       intent: keywordIntent,
-      method: 'keyword' 
+      method: 'keyword'
     });
     return keywordIntent;
-    
+
   } catch (error) {
     logger.log('error', `Intent classification error: ${error.message}`, { userInput, error: error.message });
-    
+
     // Check if this is a rate limit or API error that should trigger keyword fallback
     if (shouldUseKeywordFallback(error)) {
       if (isRateLimitError(error)) {
@@ -361,28 +363,28 @@ Your response must be exactly one of these 5 words: book_new, reschedule, cancel
         logger.log('fallback', `API error detected, using keyword classifier fallback`, { userInput, error: error.message });
       }
       const keywordIntent = classifyIntentWithKeywords(userInput);
-      logger.log('keyword', `Intent classified via keywords (fallback): ${keywordIntent}`, { 
-        userInput, 
+      logger.log('keyword', `Intent classified via keywords (fallback): ${keywordIntent}`, {
+        userInput,
         intent: keywordIntent,
-        method: 'keyword_fallback' 
+        method: 'keyword_fallback'
       });
       return keywordIntent;
     }
-    
+
     // Retry for non-rate-limit errors
     if (retryCount < MAX_RETRIES && !isRateLimitError(error)) {
       logger.log('llm', `Retrying intent classification (attempt ${retryCount + 1}/${MAX_RETRIES})`, { userInput });
       await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1))); // Progressive delay
       return await classifyIntent(userInput, retryCount + 1);
     }
-    
+
     // Final fallback: use keyword classifier
     logger.log('fallback', `LLM classification failed after retries, using keyword classifier`, { userInput });
     const keywordIntent = classifyIntentWithKeywords(userInput);
-    logger.log('keyword', `Intent classified via keywords (final fallback): ${keywordIntent}`, { 
-      userInput, 
+    logger.log('keyword', `Intent classified via keywords (final fallback): ${keywordIntent}`, {
+      userInput,
       intent: keywordIntent,
-      method: 'keyword_fallback' 
+      method: 'keyword_fallback'
     });
     return keywordIntent;
   }
@@ -398,10 +400,10 @@ export async function extractSlots(userInput, intent) {
   // Skip API calls in test environment - return empty slots
   if (IS_TEST_ENV) {
     console.log(`⚠️  Test environment: Skipping Groq API call for slot extraction. Returning empty slots.`);
-    logger.log('keyword', `Slot extraction skipped (test mode)`, { 
-      userInput, 
+    logger.log('keyword', `Slot extraction skipped (test mode)`, {
+      userInput,
       intent,
-      method: 'test_mode' 
+      method: 'test_mode'
     });
     return {};
   }
@@ -439,15 +441,15 @@ IMPORTANT: Respond with ONLY a valid JSON object. Use null for missing values. E
   try {
     const response = await getAIResponse(systemPrompt, messages);
     const content = response.content.trim();
-    
+
     // Try to parse JSON from response - handle code blocks
     let jsonString = content;
-    
+
     // Remove markdown code blocks if present
     jsonString = jsonString.replace(/```json\n?/g, '');
     jsonString = jsonString.replace(/```\n?/g, '');
     jsonString = jsonString.trim();
-    
+
     // Try to find JSON object
     const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
@@ -467,7 +469,7 @@ IMPORTANT: Respond with ONLY a valid JSON object. Use null for missing values. E
         }
       }
     }
-    
+
     return {};
   } catch (error) {
     console.error('Slot extraction error:', error);
@@ -490,17 +492,21 @@ export async function interpretDateTimeWithLLM(userInput) {
   const systemPrompt = `You are a date and time interpreter for an advisor appointment scheduling system.
 
 Your task is to interpret the user's date and time preference and extract:
-1. A specific date (or relative date like "tomorrow", "next Monday")
+1. A specific date (or relative date like "today", "tomorrow", "next day", "day after tomorrow", "next Monday", "this Friday")
 2. A time window: "morning" (10 AM - 12 PM), "afternoon" (12 PM - 4 PM), "evening" (4 PM - 6 PM), or "any" (10 AM - 6 PM)
 
 IMPORTANT CONSTRAINTS:
-- Slots are only available Monday through Friday (weekdays only)
-- Working hours are 10:00 AM to 6:00 PM IST
-- If the user requests a weekend (Saturday or Sunday), you should detect this
+- Slots are only available Monday through Saturday (working days). Sunday is a holiday.
+- Working hours are 10:00 AM to 6:00 PM IST.
+- If the user requests "morning", "early", or "AM", map to "morning".
+- If the user requests "noon", "afternoon", or "lunch", map to "afternoon".
+- If the user requests "evening", "late", or "PM" (late hours), map to "evening".
+- If the user requests a Sunday, you should detect this as a weekend/holiday.
+- Since Saturday is a working day now, it is NOT considered a weekend refusal case.
 
 Respond with a JSON object in this exact format:
 {
-  "date": "ISO date string or relative date (e.g., 'tomorrow', 'next Monday', '2024-12-15')",
+  "date": "ISO date string or relative date (e.g., 'today', 'tomorrow', 'next day', 'next Monday', '2024-12-15')",
   "timeWindow": "morning|afternoon|evening|any",
   "isWeekend": true|false,
   "requestedWeekend": true|false,
@@ -509,8 +515,8 @@ Respond with a JSON object in this exact format:
   "interpretation": "Brief explanation of what you understood"
 }
 
-If the input is too vague or ambiguous, set needsClarification to true and provide a helpful interpretation.
-If the user requests a weekend, set isWeekend and requestedWeekend to true.`;
+If the input is too vague or ambiguous (e.g., "whenever"), set needsClarification to true.
+If the user requests a Sunday, set isWeekend and requestedWeekend to true.`;
 
   const messages = [
     { role: 'user', content: `Interpret this date/time preference: "${userInput}"` }
@@ -519,13 +525,13 @@ If the user requests a weekend, set isWeekend and requestedWeekend to true.`;
   try {
     const response = await getAIResponse(systemPrompt, messages);
     const content = response.content.trim();
-    
+
     // Try to parse JSON from response
     let jsonString = content;
     jsonString = jsonString.replace(/```json\n?/g, '');
     jsonString = jsonString.replace(/```\n?/g, '');
     jsonString = jsonString.trim();
-    
+
     const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
@@ -543,11 +549,133 @@ If the user requests a weekend, set isWeekend and requestedWeekend to true.`;
         console.warn('Failed to parse LLM date/time interpretation:', parseError.message);
       }
     }
-    
+
     return { date: null, timeWindow: null, confidence: 0, needsClarification: true };
   } catch (error) {
     console.error('LLM date/time interpretation error:', error);
     return { date: null, timeWindow: null, confidence: 0, needsClarification: true };
+  }
+}
+
+/**
+ * Use LLM to interpret user slot selection from available options or free-form input
+ * @param {string} userInput - User's slot selection input
+ * @param {Array} availableSlots - Array of available slot objects with {start, end}
+ * @returns {Promise<Object>} { slotIndex: number|null, customTime: Date|null, intent: string, exit: boolean }
+ */
+export async function interpretSlotSelection(userInput, availableSlots = [], previousRequestStr = null) {
+  // Skip API calls in test environment
+  if (IS_TEST_ENV) {
+    // ... existing test logic ...
+    console.log(`⚠️  Test environment: Skipping LLM slot selection interpretation.`);
+    // Fallback to basic parsing
+    const normalized = userInput.toLowerCase().trim();
+    // ... basic logic ...
+    const numericMatch = normalized.match(/(\d+)|(first|one)|(second|two)/);
+    if (numericMatch) {
+      // ... existing logic ...
+      if (numericMatch[1]) {
+        return { slotIndex: parseInt(numericMatch[1], 10) - 1, customTime: null, intent: 'select', exit: false };
+      } else if (numericMatch[2]) {
+        return { slotIndex: 0, customTime: null, intent: 'select', exit: false };
+      } else if (numericMatch[3]) {
+        return { slotIndex: 1, customTime: null, intent: 'select', exit: false };
+      }
+    }
+    return { slotIndex: null, customTime: null, intent: 'unknown', exit: false };
+  }
+
+  // Format available slots for context
+  const slotDescriptions = availableSlots.map((slot, idx) => {
+    const istStart = utcToZonedTime(slot.start, 'Asia/Kolkata');
+    const istEnd = utcToZonedTime(slot.end, 'Asia/Kolkata');
+    return {
+      index: idx + 1,
+      start: format(istStart, 'h:mm a'),
+      end: format(istEnd, 'h:mm a'),
+      date: format(istStart, 'EEEE, d MMMM'),
+      isoStart: slot.start.toISOString(),
+      isoEnd: slot.end.toISOString()
+    };
+  });
+
+  const nowIST = utcToZonedTime(new Date(), 'Asia/Kolkata');
+  const nowISTString = format(nowIST, "EEEE, d MMMM yyyy, h:mm a");
+
+  const systemPrompt = `You are a slot selection interpreter for an advisor appointment scheduling system.
+
+The user is selecting from available appointment slots or providing a custom time preference.
+
+Current Date/Time (IST): ${nowISTString}
+All times mentioned by the user should be interpreted relative to this time in Indian Standard Time (IST).
+
+Previous Request Context (if any): ${previousRequestStr || 'None'}
+
+Available slots:
+${JSON.stringify(slotDescriptions, null, 2)}
+
+User input: "${userInput}"
+
+Your task is to determine:
+1. If the user is selecting one of the available slots (return slotIndex: 0-based index)
+2. If the user is requesting a custom time not in the list (return customTime: ISO date string with +05:30 offset)
+3. If the user wants to exit/cancel (return exit: true)
+4. The user's intent: "select", "custom", "exit", "unknown"
+
+Interpret the user's input flexibly:
+- "1", "first", "option 1", "the first one" → slotIndex: 0
+- "2", "second", "option 2", "the second one" → slotIndex: 1
+- "3 PM", "tomorrow at 2", "Monday afternoon" → customTime (Calculate the exact date and time based on Current Date/Time. Return ISO string with +05:30 offset, e.g., "2024-05-21T15:00:00+05:30")
+- "I still want that one", "I want the time I asked for", "stick to original" → customTime (Use Previous Request Context)
+- "no thanks", "cancel", "not now", "maybe later" → exit: true
+- Time descriptions like "morning", "afternoon", "evening" → customTime if not matching available slots
+- Specific times like "3:30 PM", "10 AM tomorrow" → customTime
+
+Respond with ONLY a valid JSON object:
+{
+  "slotIndex": number|null (0-based index if selecting from available slots),
+  "customTime": "ISO date string|null" (Must be a valid ISO 8601 string including timezone, e.g. "2026-01-05T16:00:00+05:30"),
+  "intent": "select|custom|exit|unknown",
+  "exit": true|false,
+  "confidence": 0.0-1.0,
+  "interpretation": "Brief explanation"
+}`;
+
+  const messages = [
+    { role: 'user', content: `Interpret slot selection: "${userInput}"` }
+  ];
+
+  try {
+    const response = await getAIResponse(systemPrompt, messages);
+    const content = response.content.trim();
+
+    // Try to parse JSON from response
+    let jsonString = content;
+    jsonString = jsonString.replace(/```json\n?/g, '');
+    jsonString = jsonString.replace(/```\n?/g, '');
+    jsonString = jsonString.trim();
+
+    const jsonMatch = jsonString.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          slotIndex: parsed.slotIndex !== undefined ? parsed.slotIndex : null,
+          customTime: parsed.customTime ? new Date(parsed.customTime) : null,
+          intent: parsed.intent || 'unknown',
+          exit: parsed.exit || false,
+          confidence: parsed.confidence || 0.5,
+          interpretation: parsed.interpretation || ''
+        };
+      } catch (parseError) {
+        console.warn('Failed to parse LLM slot selection interpretation:', parseError.message);
+      }
+    }
+
+    return { slotIndex: null, customTime: null, intent: 'unknown', exit: false, confidence: 0 };
+  } catch (error) {
+    console.error('LLM slot selection interpretation error:', error);
+    return { slotIndex: null, customTime: null, intent: 'unknown', exit: false, confidence: 0 };
   }
 }
 
