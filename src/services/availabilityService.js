@@ -13,7 +13,7 @@ import {
 } from '../config/constants.js';
 import { addDays, setHours, setMinutes, format, isAfter, startOfDay, getDay } from 'date-fns';
 import { zonedTimeToUtc, utcToZonedTime } from 'date-fns-tz';
-import { IST_TIMEZONE } from '../utils/timezone.js';
+import { IST_TIMEZONE, parseIST12HourWithSeconds, parseIST12Hour } from '../utils/timezone.js';
 
 /**
  * Generate available slots
@@ -165,17 +165,66 @@ export function formatSlot(start, end) {
   let startDate = start;
   let endDate = end;
   
-  // Check if in IST 12-hour format (contains AM/PM)
-  if (typeof start === 'string' && (start.includes(' AM') || start.includes(' PM'))) {
-    startDate = parseIST12HourWithSeconds(start) || new Date(start);
-  } else if (typeof start === 'string') {
-    startDate = new Date(start);
+  // Helper function to safely parse date
+  const safeParseDate = (dateValue) => {
+    if (!dateValue) return null;
+    
+    // If already a Date object, validate it
+    if (dateValue instanceof Date) {
+      return isNaN(dateValue.getTime()) ? null : dateValue;
+    }
+    
+    // If string, try parsing
+    if (typeof dateValue === 'string') {
+      // Check if in IST 12-hour format (contains AM/PM)
+      if (dateValue.includes(' AM') || dateValue.includes(' PM')) {
+        const parsed = parseIST12HourWithSeconds(dateValue);
+        if (parsed && !isNaN(parsed.getTime())) {
+          return parsed;
+        }
+        // Fallback to format without seconds
+        const parsedNoSeconds = parseIST12Hour(dateValue);
+        if (parsedNoSeconds && !isNaN(parsedNoSeconds.getTime())) {
+          return parsedNoSeconds;
+        }
+      }
+      
+      // Try parsing as ISO string
+      try {
+        const isoDate = new Date(dateValue);
+        if (!isNaN(isoDate.getTime())) {
+          return isoDate;
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+    }
+    
+    return null;
+  };
+  
+  // Parse start date
+  if (typeof start !== 'object' || !(start instanceof Date)) {
+    startDate = safeParseDate(start);
+    if (!startDate) {
+      throw new Error(`Invalid start date format: ${start}`);
+    }
+  } else {
+    if (isNaN(start.getTime())) {
+      throw new Error(`Invalid start date: ${start}`);
+    }
   }
   
-  if (typeof end === 'string' && (end.includes(' AM') || end.includes(' PM'))) {
-    endDate = parseIST12HourWithSeconds(end) || new Date(end);
-  } else if (typeof end === 'string') {
-    endDate = new Date(end);
+  // Parse end date
+  if (typeof end !== 'object' || !(end instanceof Date)) {
+    endDate = safeParseDate(end);
+    if (!endDate) {
+      throw new Error(`Invalid end date format: ${end}`);
+    }
+  } else {
+    if (isNaN(end.getTime())) {
+      throw new Error(`Invalid end date: ${end}`);
+    }
   }
   
   const istStart = utcToZonedTime(startDate, IST_TIMEZONE);

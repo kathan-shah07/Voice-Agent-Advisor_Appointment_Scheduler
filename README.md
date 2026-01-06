@@ -1,8 +1,11 @@
 # Voice Agent: Advisor Appointment Scheduler
+![Voice Agent: Advisor Appointment Scheduler](img/Voice-interface.png)
 
 ## Phase 1: Core Conversation Engine
 
 A voice-based appointment scheduling system that allows users to book, reschedule, and cancel advisor consultations. Phase 1 implements the core conversation engine with text-based chat interface for testing.
+
+![Chat-interface](img/chat-interface.png)
 
 ## Features
 
@@ -233,6 +236,13 @@ Format: `[A-Z]{2}-[A-Z0-9]{3}` (e.g., `NL-A742`)
 Codes are generated randomly and checked for uniqueness.
 
 ## MCP Integration (Gmail & Calendar)
+
+![MCP-Google-Calander](img/Calander.png)
+
+![MCP-Google-Sheets](img/Google-sheets.png)
+
+![MCP-Gmail-draft](img/Gmail-draft.png)
+
 
 The application now includes integration with the Gmail & Calendar MCP server for real calendar operations.
 

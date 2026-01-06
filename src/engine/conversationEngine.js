@@ -1603,7 +1603,31 @@ export class ConversationEngine {
         if (booking) {
           session.updateSlots({ booking_code: bookingCode });
           session.transitionTo(DIALOG_STATES.RESCHEDULE_TIME);
-          const response = `I found your booking for ${booking.topic} on ${formatSlot(booking.slot, booking.endSlot)}. Which day and time would work better?`;
+          
+          let slotDisplay = 'a scheduled slot';
+          if (booking.slot && booking.endSlot) {
+            try {
+              slotDisplay = formatSlot(booking.slot, booking.endSlot);
+            } catch (e) {
+              logger.log('error', `Failed to format slot for booking ${bookingCode}`, { 
+                error: e.message, 
+                slot: booking.slot, 
+                endSlot: booking.endSlot 
+              });
+              // Fallback: try to convert and format
+              try {
+                const slotDate = bookingStore.getSlotAsUTC(booking.slot);
+                const endSlotDate = bookingStore.getSlotAsUTC(booking.endSlot);
+                if (slotDate && endSlotDate) {
+                  slotDisplay = formatSlot(slotDate, endSlotDate);
+                }
+              } catch (e2) {
+                logger.log('error', `Failed to format slot with fallback for booking ${bookingCode}`, { error: e2.message });
+              }
+            }
+          }
+          
+          const response = `I found your booking for ${booking.topic} on ${slotDisplay}. Which day and time would work better?`;
           session.addMessage('assistant', response);
           return {
             response,
@@ -1670,7 +1694,31 @@ export class ConversationEngine {
       if (booking) {
         session.updateSlots({ booking_code: bookingCode });
         session.transitionTo(DIALOG_STATES.RESCHEDULE_TIME);
-        const response = `I found your booking for ${booking.topic} on ${formatSlot(booking.slot, booking.endSlot)}. Which day and time would work better?`;
+        
+        let slotDisplay = 'a scheduled slot';
+        if (booking.slot && booking.endSlot) {
+          try {
+            slotDisplay = formatSlot(booking.slot, booking.endSlot);
+          } catch (e) {
+            logger.log('error', `Failed to format slot for booking ${bookingCode}`, { 
+              error: e.message, 
+              slot: booking.slot, 
+              endSlot: booking.endSlot 
+            });
+            // Fallback: try to convert and format
+            try {
+              const slotDate = bookingStore.getSlotAsUTC(booking.slot);
+              const endSlotDate = bookingStore.getSlotAsUTC(booking.endSlot);
+              if (slotDate && endSlotDate) {
+                slotDisplay = formatSlot(slotDate, endSlotDate);
+              }
+            } catch (e2) {
+              logger.log('error', `Failed to format slot with fallback for booking ${bookingCode}`, { error: e2.message });
+            }
+          }
+        }
+        
+        const response = `I found your booking for ${booking.topic} on ${slotDisplay}. Which day and time would work better?`;
         session.addMessage('assistant', response);
         return {
           response,
@@ -1992,8 +2040,12 @@ export class ConversationEngine {
         const eventId = bookingRecord.eventId || slots.event_id || null;
 
         // Execute tool calls for reschedule
-        const toolCallConfigs = [
-          {
+        // Only call calendar MCP if eventId exists and not a waitlist (waitlist bookings don't have calendar events)
+        const toolCallConfigs = [];
+        
+        // Only add calendar MCP call if eventId exists and not a waitlist
+        if (eventId && !isWaitlist) {
+          toolCallConfigs.push({
             name: 'event_update_time',
             params: {
               bookingCode: bookingCode,
@@ -2001,7 +2053,11 @@ export class ConversationEngine {
               newStartDateTime: selectedSlot.start.toISOString(),
               newEndDateTime: selectedSlot.end.toISOString()
             }
-          },
+          });
+        }
+        
+        // Always add Sheets and Gmail MCP calls
+        toolCallConfigs.push(
           {
             name: 'notes_append_prebooking',
             params: {
@@ -2025,7 +2081,7 @@ export class ConversationEngine {
               action: 'Rescheduled'
             }
           }
-        ];
+        );
 
         const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
 
@@ -2035,9 +2091,13 @@ export class ConversationEngine {
           bookingCode: slots.booking_code
         });
 
-        // Update booking with possibly new event ID
-        const newEventId = results[0]?.data?.id || null;
-        if (newEventId) {
+        // Update booking with possibly new event ID (only if calendar MCP was called)
+        // For waitlist or bookings without eventId, results[0] is Sheets MCP, not calendar
+        const calendarResultIndex = eventId && !isWaitlist ? 0 : -1;
+        const newEventId = calendarResultIndex >= 0 && results[calendarResultIndex]?.data?.id ? results[calendarResultIndex].data.id : eventId;
+        
+        // Only update if we got a new event ID or if we need to preserve the existing one
+        if (newEventId && newEventId !== eventId) {
           await bookingStore.setBooking(bookingCode, {
             ...bookingRecord,
             eventId: newEventId
@@ -2236,7 +2296,30 @@ export class ConversationEngine {
         session.updateSlots({ booking_code: bookingCode });
         session.transitionTo(DIALOG_STATES.CANCEL_CONFIRMATION);
 
-        const response = `I found your booking for ${booking.topic} on ${formatSlot(booking.slot, booking.endSlot)}. Are you sure you want to cancel this appointment?`;
+        let slotDisplay = 'a scheduled slot';
+        if (booking.slot && booking.endSlot) {
+          try {
+            slotDisplay = formatSlot(booking.slot, booking.endSlot);
+          } catch (e) {
+            logger.log('error', `Failed to format slot for booking ${bookingCode}`, { 
+              error: e.message, 
+              slot: booking.slot, 
+              endSlot: booking.endSlot 
+            });
+            // Fallback: try to display raw dates
+            try {
+              const slotDate = bookingStore.getSlotAsUTC(booking.slot);
+              const endSlotDate = bookingStore.getSlotAsUTC(booking.endSlot);
+              if (slotDate && endSlotDate) {
+                slotDisplay = formatSlot(slotDate, endSlotDate);
+              }
+            } catch (e2) {
+              logger.log('error', `Failed to format slot with fallback for booking ${bookingCode}`, { error: e2.message });
+            }
+          }
+        }
+
+        const response = `I found your booking for ${booking.topic} on ${slotDisplay}. Are you sure you want to cancel this appointment?`;
         session.addMessage('assistant', response);
         return {
           response,
@@ -2290,15 +2373,23 @@ export class ConversationEngine {
         bookingStore.deleteBooking(bookingCode);
         existingCodes.delete(bookingCode);
 
-        // Execute tool calls for cancellation - include eventId if available
-        const toolCallConfigs = [
-          {
+        // Execute tool calls for cancellation
+        // Only call calendar MCP if eventId exists (waitlist bookings don't have calendar events)
+        const toolCallConfigs = [];
+        
+        // Only add calendar MCP call if eventId exists
+        if (eventId) {
+          toolCallConfigs.push({
             name: 'event_cancel',
             params: {
               bookingCode,
-              eventId: eventId // Use eventId from map, booking, or session
+              eventId: eventId
             }
-          },
+          });
+        }
+        
+        // Always add Sheets and Gmail MCP calls
+        toolCallConfigs.push(
           {
             name: 'notes_append_prebooking',
             params: {
@@ -2322,7 +2413,7 @@ export class ConversationEngine {
               action: 'Cancelled'
             }
           }
-        ];
+        );
 
         const { toolCalls, results } = await this.executeToolCalls(toolCallConfigs);
 
@@ -2362,7 +2453,29 @@ export class ConversationEngine {
       } else {
         // Unclear response - ask for clarification
         const booking = bookingStore.getBooking(bookingCode);
-        const response = `Please confirm: Do you want to cancel your appointment for ${booking ? formatSlot(booking.slot, booking.endSlot) : 'this booking'}? (yes/no)`;
+        let slotDisplay = 'this booking';
+        if (booking && booking.slot && booking.endSlot) {
+          try {
+            slotDisplay = formatSlot(booking.slot, booking.endSlot);
+          } catch (e) {
+            logger.log('error', `Failed to format slot for booking ${bookingCode}`, { 
+              error: e.message, 
+              slot: booking.slot, 
+              endSlot: booking.endSlot 
+            });
+            // Fallback: try to convert and format
+            try {
+              const slotDate = bookingStore.getSlotAsUTC(booking.slot);
+              const endSlotDate = bookingStore.getSlotAsUTC(booking.endSlot);
+              if (slotDate && endSlotDate) {
+                slotDisplay = formatSlot(slotDate, endSlotDate);
+              }
+            } catch (e2) {
+              logger.log('error', `Failed to format slot with fallback for booking ${bookingCode}`, { error: e2.message });
+            }
+          }
+        }
+        const response = `Please confirm: Do you want to cancel your appointment for ${slotDisplay}? (yes/no)`;
         session.addMessage('assistant', response);
         return {
           response,

@@ -133,36 +133,56 @@ export function formatIST12Hour(date) {
 export function parseIST12Hour(ist12HourStr) {
   if (!ist12HourStr) return null;
   
-  // Parse format: "YYYY-MM-DD h:mm a" or "YYYY-MM-DD hh:mm a"
-  const match = ist12HourStr.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})\s+(AM|PM)$/i);
-  if (!match) {
-    // Try to parse as ISO and convert
-    try {
-      const date = parseISO(ist12HourStr);
-      return zonedTimeToUtc(date, IST_TIMEZONE);
-    } catch (e) {
-      logger.log('error', `Failed to parse IST 12-hour format: ${ist12HourStr}`, { error: e.message });
+  try {
+    // Parse format: "YYYY-MM-DD h:mm a" or "YYYY-MM-DD hh:mm a"
+    const match = ist12HourStr.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})\s+(AM|PM)$/i);
+    if (!match) {
+      // Try to parse as ISO and convert
+      try {
+        const date = parseISO(ist12HourStr);
+        if (date && !isNaN(date.getTime())) {
+          return zonedTimeToUtc(date, IST_TIMEZONE);
+        }
+      } catch (e) {
+        logger.log('error', `Failed to parse IST 12-hour format: ${ist12HourStr}`, { error: e.message });
+      }
       return null;
     }
+    
+    const [, dateStr, hourStr, minuteStr, ampm] = match;
+    let hour = parseInt(hourStr, 10);
+    const minute = parseInt(minuteStr, 10);
+    
+    // Validate parsed values
+    if (isNaN(hour) || isNaN(minute) || hour < 0 || hour > 12 || minute < 0 || minute > 59) {
+      logger.log('error', `Invalid time values in IST 12-hour format: ${ist12HourStr}`, { hour, minute });
+      return null;
+    }
+    
+    // Convert 12-hour to 24-hour
+    if (ampm.toUpperCase() === 'PM' && hour !== 12) {
+      hour += 12;
+    } else if (ampm.toUpperCase() === 'AM' && hour === 12) {
+      hour = 0;
+    }
+    
+    // Create IST date string with explicit IST timezone offset
+    // Format: "YYYY-MM-DDTHH:mm:ss+05:30" to explicitly mark as IST
+    const istDateTimeStr = `${dateStr}T${hour.toString().padStart(2, '0')}:${minuteStr}:00+05:30`;
+    const istDate = parseISO(istDateTimeStr);
+    
+    // Validate parsed date
+    if (!istDate || isNaN(istDate.getTime())) {
+      logger.log('error', `Invalid parsed date from: ${istDateTimeStr}`, {});
+      return null;
+    }
+    
+    // Since we parsed with +05:30, the date is already in UTC (parseISO converts timezone-aware strings to UTC)
+    return istDate;
+  } catch (error) {
+    logger.log('error', `Error parsing IST 12-hour format: ${ist12HourStr}`, { error: error.message });
+    return null;
   }
-  
-  const [, dateStr, hourStr, minuteStr, ampm] = match;
-  let hour = parseInt(hourStr, 10);
-  const minute = parseInt(minuteStr, 10);
-  
-  // Convert 12-hour to 24-hour
-  if (ampm.toUpperCase() === 'PM' && hour !== 12) {
-    hour += 12;
-  } else if (ampm.toUpperCase() === 'AM' && hour === 12) {
-    hour = 0;
-  }
-  
-  // Create IST date string
-  const istDateTimeStr = `${dateStr}T${hour.toString().padStart(2, '0')}:${minuteStr}:00`;
-  const istDate = parseISO(istDateTimeStr);
-  
-  // Convert to UTC
-  return zonedTimeToUtc(istDate, IST_TIMEZONE);
 }
 
 /**
@@ -187,30 +207,64 @@ export function formatIST12HourWithSeconds(date) {
 export function parseIST12HourWithSeconds(ist12HourStr) {
   if (!ist12HourStr) return null;
   
-  // Parse format: "YYYY-MM-DD h:mm:ss a"
-  const match = ist12HourStr.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s+(AM|PM)$/i);
-  if (!match) {
-    // Fallback to format without seconds
-    return parseIST12Hour(ist12HourStr);
+  try {
+    // Parse format: "YYYY-MM-DD h:mm:ss a" or "YYYY-MM-DD h:mm a"
+    const matchWithSeconds = ist12HourStr.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s+(AM|PM)$/i);
+    const matchWithoutSeconds = ist12HourStr.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{1,2}):(\d{2})\s+(AM|PM)$/i);
+    
+    let dateStr, hourStr, minuteStr, secondStr, ampm;
+    
+    if (matchWithSeconds) {
+      [, dateStr, hourStr, minuteStr, secondStr, ampm] = matchWithSeconds;
+    } else if (matchWithoutSeconds) {
+      [, dateStr, hourStr, minuteStr, ampm] = matchWithoutSeconds;
+      secondStr = '00';
+    } else {
+      // Fallback to format without seconds
+      return parseIST12Hour(ist12HourStr);
+    }
+    
+    let hour = parseInt(hourStr, 10);
+    const minute = parseInt(minuteStr, 10);
+    const second = parseInt(secondStr, 10);
+    
+    // Validate parsed values
+    if (isNaN(hour) || isNaN(minute) || isNaN(second) || hour < 0 || hour > 12 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+      logger.log('error', `Invalid time values in IST 12-hour format: ${ist12HourStr}`, { hour, minute, second });
+      return null;
+    }
+    
+    // Convert 12-hour to 24-hour
+    if (ampm.toUpperCase() === 'PM' && hour !== 12) {
+      hour += 12;
+    } else if (ampm.toUpperCase() === 'AM' && hour === 12) {
+      hour = 0;
+    }
+    
+    // Create IST date string with explicit IST timezone offset
+    // Format: "YYYY-MM-DDTHH:mm:ss+05:30" to explicitly mark as IST
+    const istDateTimeStr = `${dateStr}T${hour.toString().padStart(2, '0')}:${minuteStr}:${secondStr}+05:30`;
+    let istDate;
+    
+    try {
+      istDate = parseISO(istDateTimeStr);
+    } catch (e) {
+      logger.log('error', `Failed to parse IST date string: ${istDateTimeStr}`, { error: e.message });
+      return null;
+    }
+    
+    // Validate parsed date
+    if (!istDate || isNaN(istDate.getTime())) {
+      logger.log('error', `Invalid parsed date from: ${istDateTimeStr}`, {});
+      return null;
+    }
+    
+    // Since we parsed with +05:30, the date is already in UTC (parseISO converts timezone-aware strings to UTC)
+    // But we need to verify this is correct
+    return istDate;
+  } catch (error) {
+    logger.log('error', `Error parsing IST 12-hour format with seconds: ${ist12HourStr}`, { error: error.message });
+    return null;
   }
-  
-  const [, dateStr, hourStr, minuteStr, secondStr, ampm] = match;
-  let hour = parseInt(hourStr, 10);
-  const minute = parseInt(minuteStr, 10);
-  const second = parseInt(secondStr, 10);
-  
-  // Convert 12-hour to 24-hour
-  if (ampm.toUpperCase() === 'PM' && hour !== 12) {
-    hour += 12;
-  } else if (ampm.toUpperCase() === 'AM' && hour === 12) {
-    hour = 0;
-  }
-  
-  // Create IST date string
-  const istDateTimeStr = `${dateStr}T${hour.toString().padStart(2, '0')}:${minuteStr}:${secondStr}`;
-  const istDate = parseISO(istDateTimeStr);
-  
-  // Convert to UTC
-  return zonedTimeToUtc(istDate, IST_TIMEZONE);
 }
 
